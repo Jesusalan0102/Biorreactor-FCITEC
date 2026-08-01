@@ -8,16 +8,24 @@ import serial
 import serial.tools.list_ports
 import threading
 import time
+import os
 from datetime import datetime
 import pymysql
+from dotenv import load_dotenv
 
-# Configuración base de datos (Clever Cloud)
-DB_HOST = 'bfn0iql8vbpvwgbmq9zk-mysql.services.clever-cloud.com'
-DB_USER = 'unluguvpazazzigt'
-DB_PASSWORD = '2WEzm3qBlwn7lfmSmXQB'
-DB_NAME = 'bfn0iql8vbpvwgbmq9zk'
-DB_PORT = 3306
-CLAVE_MAESTRA = '1270345'
+load_dotenv()
+
+# Configuración base de datos (Clever Cloud) - vía variables de entorno (.env local)
+DB_HOST = os.environ.get('DB_HOST', '')
+DB_USER = os.environ.get('DB_USER', '')
+DB_PASSWORD = os.environ.get('DB_PASSWORD', '')
+DB_NAME = os.environ.get('DB_NAME', '')
+DB_PORT = int(os.environ.get('DB_PORT', '3306'))
+CLAVE_MAESTRA = os.environ.get('CLAVE_MAESTRA', '')
+
+if not all([DB_HOST, DB_USER, DB_PASSWORD, DB_NAME]):
+    print("[ADVERTENCIA] Faltan variables de entorno de base de datos. "
+          "Crea un archivo .env junto a este script (ver .env.example).")
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
