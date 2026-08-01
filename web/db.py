@@ -111,6 +111,8 @@ def obtener_estado_actual(limit: int = 20) -> dict:
             if fh.tzinfo is None:
                 fh = fh.replace(tzinfo=TZ_TIJUANA)
             esta_vivo = (ahora_tijuana() - fh).total_seconds() < VENTANA_ONLINE_SEG
+            print(f"[DEBUG TZ] fh_ajustado={fh} | ahora_tijuana={ahora_tijuana()} | "
+                  f"diff_seg={(ahora_tijuana() - fh).total_seconds()}")
 
         if emergencia:
             status = "EMERGENCIA"
