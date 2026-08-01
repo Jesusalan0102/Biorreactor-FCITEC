@@ -6,11 +6,13 @@ from tkinter import messagebox, ttk
 from PIL import Image
 import pymysql
 import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from datetime import datetime
 import threading
 import sys
 import os
+import math
 
 COLOR_TEMP = "#E63946"
 COLOR_PH = "#2A9D8F"
@@ -18,6 +20,24 @@ COLOR_OD600 = "#9B59B6"
 COLOR_ON = "#2ECC71"
 COLOR_OFF = "#E74C3C"
 COLOR_GRAY = "#555555"
+COLOR_FONDO_PANEL = "#0f3460"
+COLOR_ALERTA = "#E74C3C"
+COLOR_ADVERTENCIA = "#F4B400"
+
+# Escalas y rangos seguros de los gauges (deben coincidir con
+# rango_control de controlfisicoV2.py, que es quien realmente controla).
+RANGO_TEMP = (20.0, 45.0)
+RANGO_TEMP_SEGURO = (36.5, 37.5)
+RANGO_PH = (0.0, 14.0)
+RANGO_PH_SEGURO = (6.8, 7.2)
+RANGO_OD = (0.0, 3.5)
+OD_INDUCCION = 0.7
+OD_COSECHA = 2.0
+
+# Mapa relé -> elemento del diagrama de proceso (P&ID)
+# rele1=Calefacción, rele2=Bomba pH(OH), rele3=Bomba IPTG,
+# rele4=Bomba Cosecha, rele5=Agitador, rele6=Aireación
+# (mismo mapeo que usa controlfisicoV2.py / codigotesisV2.ino)
 
 DB_HOST = 'bfn0iql8vbpvwgbmq9zk-mysql.services.clever-cloud.com'
 DB_USER = 'unluguvpazazzigt'
@@ -166,32 +186,39 @@ class SCADA_Bioreactor_Final(ctk.CTk):
         self.lbl_status = ctk.CTkLabel(header, text="● OFFLINE", font=("Arial", 16, "bold"), text_color="red")
         self.lbl_status.pack(side="right", padx=30, pady=10)
 
-        # KPIs
-        kpi_frame = ctk.CTkFrame(self, fg_color="#1a1a2e")
-        kpi_frame.pack(fill="x", padx=20, pady=10)
+        # ---------- Vista general: diagrama de proceso (P&ID) + gauges ----------
+        overview_frame = ctk.CTkFrame(self, fg_color="#1a1a2e")
+        overview_frame.pack(fill="x", padx=20, pady=10)
 
-        self.ui_temp = self.crear_kpi_panel(kpi_frame, "TEMPERATURA °C", "0.0", COLOR_TEMP)
-        self.ui_ph = self.crear_kpi_panel(kpi_frame, "pH", "0.00", COLOR_PH)
-        self.ui_od600 = self.crear_kpi_panel(kpi_frame, "OD600", "0.000", COLOR_OD600)
+        pid_frame = ctk.CTkFrame(overview_frame, fg_color=COLOR_FONDO_PANEL, corner_radius=15)
+        pid_frame.pack(side="left", fill="both", expand=True, padx=(0, 10))
+        ctk.CTkLabel(pid_frame, text="DIAGRAMA DE PROCESO", font=("Arial", 13, "bold"),
+                     text_color="white").pack(pady=(8, 0))
 
-        # LEDs - Ahora con 10 elementos (rele1 a rele6 + sistema + 3 bombas explícitas)
-        leds_frame = ctk.CTkFrame(self, fg_color="#0f3460")
-        leds_frame.pack(fill="x", padx=20, pady=5)
+        self.fig_pid, self.ax_pid = plt.subplots(figsize=(6.5, 3.6))
+        self.fig_pid.patch.set_facecolor(COLOR_FONDO_PANEL)
+        self.ax_pid.set_facecolor(COLOR_FONDO_PANEL)
+        self.fig_pid.subplots_adjust(left=0.01, right=0.99, top=0.98, bottom=0.02)
+        self.canvas_pid = FigureCanvasTkAgg(self.fig_pid, master=pid_frame)
+        self.canvas_pid.get_tk_widget().pack(fill="both", expand=True, padx=8, pady=8)
 
-        self.leds_ref = []
-        labels = [
-            "Rele1 (Calefacción)", "Rele2 (pH)", "Rele3 (IPTG)", "Rele4 (Cosecha)",
-            "Rele5 (Agitador)", "Rele6 (Aireación)", "Sistema",
-            "Bomba pH", "Bomba IPTG", "Bomba Cosecha"
-        ]
-        for label in labels:
-            f = ctk.CTkFrame(leds_frame, fg_color="transparent")
-            f.pack(side="left", padx=12)
-            led_canvas = tk.Canvas(f, width=30, height=30, bg="#0f3460", highlightthickness=0)
-            led_canvas.pack(pady=5)
-            led = led_canvas.create_oval(5, 5, 25, 25, fill=COLOR_GRAY)
-            ctk.CTkLabel(f, text=label, font=("Arial", 11), text_color="white").pack()
-            self.leds_ref.append((led_canvas, led))
+        gauges_frame = ctk.CTkFrame(overview_frame, fg_color=COLOR_FONDO_PANEL, corner_radius=15)
+        gauges_frame.pack(side="left", fill="both", expand=True)
+        ctk.CTkLabel(gauges_frame, text="VARIABLES DEL PROCESO", font=("Arial", 13, "bold"),
+                     text_color="white").pack(pady=(8, 0))
+
+        self.fig_gauges, (self.ax_gauge_temp, self.ax_gauge_ph, self.ax_gauge_od) = \
+            plt.subplots(1, 3, figsize=(6.5, 3.6))
+        self.fig_gauges.patch.set_facecolor(COLOR_FONDO_PANEL)
+        for ax in (self.ax_gauge_temp, self.ax_gauge_ph, self.ax_gauge_od):
+            ax.set_facecolor(COLOR_FONDO_PANEL)
+        self.fig_gauges.subplots_adjust(left=0.02, right=0.98, top=0.98, bottom=0.02, wspace=0.15)
+        self.canvas_gauges = FigureCanvasTkAgg(self.fig_gauges, master=gauges_frame)
+        self.canvas_gauges.get_tk_widget().pack(fill="both", expand=True, padx=8, pady=8)
+
+        # Dibujo inicial en estado "sin datos" (todo apagado/gris)
+        self.dibujar_pid_completo(None)
+        self.actualizar_gauges(RANGO_TEMP[0], RANGO_PH[0], RANGO_OD[0])
 
         # Gráficas
         graph_frame = ctk.CTkFrame(self, fg_color="#0f3460")
@@ -226,14 +253,147 @@ class SCADA_Bioreactor_Final(ctk.CTk):
 
         self.iniciar_ciclo()
 
-    def crear_kpi_panel(self, master, label_text, valor_inicial, color):
-        frame = ctk.CTkFrame(master, width=300, height=100, corner_radius=15, fg_color="#0f3460")
-        frame.pack(side="left", padx=20)
-        ctk.CTkLabel(frame, text=label_text, font=("Arial", 16), text_color="white").pack(pady=10)
-        lbl_valor = ctk.CTkLabel(frame, text=valor_inicial, font=("Arial", 48, "bold"), text_color=color)
-        lbl_valor.pack(pady=10)
+    # ---------------------------------------------------------------
+    # Gauges circulares (velocímetro) para Temperatura / pH / OD600
+    # ---------------------------------------------------------------
+    def dibujar_gauge(self, ax, valor, minimo, maximo, zonas, titulo, unidad, texto_valor=None):
+        """Dibuja un gauge tipo velocímetro (semicírculo 180°->0°) en el eje
+        dado. `zonas` es una lista de tuplas (z_min, z_max, color) que
+        colorean el arco de fondo (p.ej. rojo/verde/rojo para rangos
+        seguros, o azul/ámbar/verde para etapas de proceso como OD600)."""
+        ax.clear()
+        ax.set_xlim(-1.15, 1.15)
+        ax.set_ylim(-0.35, 1.15)
+        ax.set_aspect('equal')
+        ax.axis('off')
 
-        return lbl_valor
+        def valor_a_angulo(v):
+            v = max(minimo, min(maximo, v))
+            frac = (v - minimo) / (maximo - minimo) if maximo > minimo else 0
+            return 180.0 - frac * 180.0  # 180°=mínimo (izq), 0°=máximo (der)
+
+        # Arco de fondo por zonas de color
+        for z_min, z_max, color in zonas:
+            z_min_c = max(minimo, z_min)
+            z_max_c = min(maximo, z_max)
+            if z_max_c <= z_min_c:
+                continue
+            theta1 = valor_a_angulo(z_max_c)
+            theta2 = valor_a_angulo(z_min_c)
+            ax.add_patch(mpatches.Wedge((0, 0), 1.0, theta1, theta2, width=0.28,
+                                         facecolor=color, edgecolor=COLOR_FONDO_PANEL, linewidth=1))
+
+        # Aguja
+        ang = math.radians(valor_a_angulo(valor))
+        ax.plot([0, 0.82 * math.cos(ang)], [0, 0.82 * math.sin(ang)],
+                color="white", linewidth=3, solid_capstyle="round")
+        ax.add_patch(mpatches.Circle((0, 0), 0.055, facecolor="white", edgecolor=COLOR_FONDO_PANEL))
+
+        texto = texto_valor if texto_valor is not None else f"{valor:.2f} {unidad}"
+        ax.text(0, -0.22, texto, ha="center", va="center", fontsize=14,
+                fontweight="bold", color="white")
+        ax.text(0, 1.08, titulo, ha="center", va="bottom", fontsize=11,
+                fontweight="bold", color="white")
+
+    def actualizar_gauges(self, temp, ph, od600):
+        zonas_temp = [
+            (RANGO_TEMP[0], RANGO_TEMP_SEGURO[0], COLOR_ALERTA),
+            (RANGO_TEMP_SEGURO[0], RANGO_TEMP_SEGURO[1], COLOR_ON),
+            (RANGO_TEMP_SEGURO[1], RANGO_TEMP[1], COLOR_ALERTA),
+        ]
+        zonas_ph = [
+            (RANGO_PH[0], RANGO_PH_SEGURO[0], COLOR_ALERTA),
+            (RANGO_PH_SEGURO[0], RANGO_PH_SEGURO[1], COLOR_ON),
+            (RANGO_PH_SEGURO[1], RANGO_PH[1], COLOR_ALERTA),
+        ]
+        # Para OD600 no hay "rango seguro": son etapas del proceso.
+        zonas_od = [
+            (RANGO_OD[0], OD_INDUCCION, "#3498DB"),      # Creciendo
+            (OD_INDUCCION, OD_COSECHA, COLOR_ADVERTENCIA),  # Inducido
+            (OD_COSECHA, RANGO_OD[1], COLOR_ON),          # Listo para cosecha
+        ]
+
+        self.dibujar_gauge(self.ax_gauge_temp, temp, *RANGO_TEMP, zonas_temp,
+                            "TEMPERATURA", "°C", texto_valor=f"{temp:.1f} °C")
+        self.dibujar_gauge(self.ax_gauge_ph, ph, *RANGO_PH, zonas_ph,
+                            "pH", "", texto_valor=f"{ph:.2f}")
+        self.dibujar_gauge(self.ax_gauge_od, od600, *RANGO_OD, zonas_od,
+                            "OD600", "", texto_valor=f"{od600:.3f}")
+
+        self.canvas_gauges.draw_idle()
+
+    # ---------------------------------------------------------------
+    # Diagrama de proceso (P&ID) animado según el estado de los relés
+    # ---------------------------------------------------------------
+    def dibujar_pid_completo(self, estados_reles):
+        """estados_reles: dict con claves 'rele1'..'rele6' (bool) o None si
+        no hay datos (todo se dibuja apagado/gris)."""
+        if estados_reles is None:
+            estados_reles = {f"rele{i}": False for i in range(1, 7)}
+
+        def color_estado(clave):
+            return COLOR_ON if estados_reles.get(clave, False) else COLOR_GRAY
+
+        ax = self.ax_pid
+        ax.clear()
+        ax.set_xlim(0, 10)
+        ax.set_ylim(0, 9)
+        ax.set_aspect('equal')
+        ax.axis('off')
+
+        # --- Tanque del biorreactor ---
+        tanque = mpatches.FancyBboxPatch((3.6, 1.6), 2.8, 4.6,
+                                          boxstyle="round,pad=0.05,rounding_size=0.25",
+                                          facecolor="#16324a", edgecolor="white", linewidth=1.5)
+        ax.add_patch(tanque)
+        # Nivel de cultivo (decorativo)
+        ax.add_patch(mpatches.Rectangle((3.75, 1.8), 2.5, 2.6,
+                                         facecolor="#2A9D8F", alpha=0.45, edgecolor=None))
+        ax.text(5.0, 6.55, "Biorreactor", ha="center", fontsize=9, color="white")
+
+        # --- Agitador / motor M2 (rele5) ---
+        color_motor = color_estado("rele5")
+        ax.add_patch(mpatches.Rectangle((4.55, 6.2), 0.9, 0.55, facecolor=color_motor, edgecolor="white"))
+        ax.text(5.0, 6.85, "M2 Agitador", ha="center", fontsize=8, color="white")
+        # Eje del agitador dentro del tanque
+        ax.plot([5.0, 5.0], [6.2, 2.2], color=color_motor, linewidth=2)
+
+        # --- Calefacción / hot plate HT1 (rele1), debajo del tanque ---
+        color_heater = color_estado("rele1")
+        ax.add_patch(mpatches.FancyBboxPatch((3.6, 0.7), 2.8, 0.6,
+                                              boxstyle="round,pad=0.02,rounding_size=0.1",
+                                              facecolor=color_heater, edgecolor="white"))
+        ax.text(5.0, 1.0, "HT1 Calefacción", ha="center", va="center", fontsize=8, color="black")
+
+        # --- Bomba pH / OH Pump (rele2), izquierda-arriba ---
+        self._dibujar_bomba(ax, 1.1, 5.7, color_estado("rele2"), "Bomba pH\n(NaOH)")
+        ax.plot([1.6, 3.6], [5.7, 5.4], color=color_estado("rele2"), linewidth=2)
+
+        # --- Bomba IPTG (rele3), izquierda-abajo ---
+        self._dibujar_bomba(ax, 1.1, 3.4, color_estado("rele3"), "Bomba\nIPTG")
+        ax.plot([1.6, 3.6], [3.4, 3.6], color=color_estado("rele3"), linewidth=2)
+
+        # --- Aireación / Air Pump (rele6), derecha-arriba ---
+        color_air = color_estado("rele6")
+        self._dibujar_bomba(ax, 8.9, 5.7, color_air, "Air Pump\n(O2)")
+        ax.plot([8.4, 6.4], [5.7, 5.4], color=color_air, linewidth=2)
+
+        # --- Bomba de cosecha / Harvest Pump (rele4), derecha-abajo ---
+        color_harvest = color_estado("rele4")
+        self._dibujar_bomba(ax, 8.9, 3.4, color_harvest, "Bomba\nCosecha")
+        ax.plot([6.4, 8.4], [3.6, 3.4], color=color_harvest, linewidth=2)
+        # Frasco de cosecha (10°C)
+        ax.add_patch(mpatches.Circle((9.5, 2.1), 0.35, facecolor="#4a90d9" if estados_reles.get("rele4") else "#2c3e50",
+                                      edgecolor="white"))
+        ax.plot([8.9, 9.5], [3.15, 2.45], color=color_harvest, linewidth=2)
+        ax.text(9.5, 1.55, "10°C", ha="center", fontsize=7, color="white")
+
+        self.canvas_pid.draw_idle()
+
+    def _dibujar_bomba(self, ax, x, y, color, etiqueta):
+        ax.add_patch(mpatches.Circle((x, y), 0.5, facecolor=color, edgecolor="white", linewidth=1.5))
+        ax.text(x, y, "⟳", ha="center", va="center", fontsize=14, color="black" if color == COLOR_ON else "white")
+        ax.text(x, y - 0.75, etiqueta, ha="center", va="top", fontsize=7.5, color="white")
 
     def iniciar_ciclo(self):
         if not self.monitoreo_activo:
@@ -282,15 +442,12 @@ class SCADA_Bioreactor_Final(ctk.CTk):
 
     def actualizar_ui(self, rows, emergencia):
         if not rows or len(rows) == 0:
-            self.ui_temp.configure(text="0.0")
-            self.ui_ph.configure(text="0.00")
-            self.ui_od600.configure(text="0.000")
+            self.actualizar_gauges(RANGO_TEMP[0], RANGO_PH[0], RANGO_OD[0])
+            self.dibujar_pid_completo(None)
             self.ax_temp.clear()
             self.ax_ph.clear()
             self.ax_od.clear()
             self.canvas.draw_idle()
-            for i in range(10):
-                self.leds_ref[i][0].itemconfig(self.leds_ref[i][1], fill=COLOR_GRAY)
             return
 
         u = rows[-1]
@@ -308,9 +465,10 @@ class SCADA_Bioreactor_Final(ctk.CTk):
                                       text_color=COLOR_ON if esta_vivo else "red")
 
         if esta_vivo:
-            self.ui_temp.configure(text=f"{u[0]:.1f}" if u[0] is not None else "0.0")
-            self.ui_ph.configure(text=f"{u[1]:.2f}" if u[1] is not None else "0.00")
-            self.ui_od600.configure(text=f"{u[2]:.3f}" if u[2] is not None else "0.000")
+            temp_actual = u[0] if u[0] is not None else 0.0
+            ph_actual = u[1] if u[1] is not None else 0.0
+            od_actual = u[2] if u[2] is not None else 0.0
+            self.actualizar_gauges(temp_actual, ph_actual, od_actual)
 
             tiempos = [r[3].strftime("%H:%M") if r[3] is not None else "" for r in rows]
             self.ax_temp.clear()
@@ -332,33 +490,24 @@ class SCADA_Bioreactor_Final(ctk.CTk):
             self.fig.tight_layout()
             self.canvas.draw_idle()
 
-            # Estados: rele1 a rele6 + sistema + 3 bombas (10 en total)
-            estados = [
-                u[8],   # rele1
-                u[9],   # rele2 (pH)
-                u[10],  # rele3 (IPTG)
-                u[11],  # rele4 (Cosecha)
-                u[12],  # rele5 (Agitador)
-                u[13],  # rele6 (Aireación)
-                u[7],   # sistema_funcionando
-                u[4],   # bomba_ph_on
-                u[5],   # bomba_iptg_on
-                u[6]    # bomba_cosecha_on
-            ]
-            for i in range(10):
-                color = COLOR_ON if estados[i] else COLOR_OFF
-                self.leds_ref[i][0].itemconfig(self.leds_ref[i][1], fill=color)
+            # Estados de relé 1..6, alimentan el diagrama P&ID (heater, bombas, agitador, aireación)
+            estados_reles = {
+                "rele1": bool(u[8]),
+                "rele2": bool(u[9]),
+                "rele3": bool(u[10]),
+                "rele4": bool(u[11]),
+                "rele5": bool(u[12]),
+                "rele6": bool(u[13]),
+            }
+            self.dibujar_pid_completo(estados_reles)
 
         else:
-            self.ui_temp.configure(text="0.0")
-            self.ui_ph.configure(text="0.00")
-            self.ui_od600.configure(text="0.000")
+            self.actualizar_gauges(RANGO_TEMP[0], RANGO_PH[0], RANGO_OD[0])
+            self.dibujar_pid_completo(None)
             self.ax_temp.clear()
             self.ax_ph.clear()
             self.ax_od.clear()
             self.canvas.draw_idle()
-            for i in range(10):
-                self.leds_ref[i][0].itemconfig(self.leds_ref[i][1], fill=COLOR_GRAY)
 
     def activar_paro(self):
         if messagebox.askyesno("CONFIRMACIÓN", "¿Activar PARO DE EMERGENCIA físico?"):
