@@ -13,6 +13,9 @@ import threading
 import sys
 import os
 import math
+from dotenv import load_dotenv
+
+load_dotenv()
 
 COLOR_TEMP = "#E63946"
 COLOR_PH = "#2A9D8F"
@@ -39,12 +42,17 @@ OD_COSECHA = 2.0
 # rele4=Bomba Cosecha, rele5=Agitador, rele6=Aireación
 # (mismo mapeo que usa controlfisicoV2.py / codigotesisV2.ino)
 
-DB_HOST = 'bfn0iql8vbpvwgbmq9zk-mysql.services.clever-cloud.com'
-DB_USER = 'unluguvpazazzigt'
-DB_PASSWORD = '2WEzm3qBlwn7lfmSmXQB'
-DB_NAME = 'bfn0iql8vbpvwgbmq9zk'
-DB_PORT = 3306
-CLAVE_MAESTRA = '1270345'
+# Configuración base de datos (Clever Cloud) - vía variables de entorno (.env local)
+DB_HOST = os.environ.get('DB_HOST', '')
+DB_USER = os.environ.get('DB_USER', '')
+DB_PASSWORD = os.environ.get('DB_PASSWORD', '')
+DB_NAME = os.environ.get('DB_NAME', '')
+DB_PORT = int(os.environ.get('DB_PORT', '3306'))
+CLAVE_MAESTRA = os.environ.get('CLAVE_MAESTRA', '')
+
+if not all([DB_HOST, DB_USER, DB_PASSWORD, DB_NAME]):
+    print("[ADVERTENCIA] Faltan variables de entorno de base de datos. "
+          "Crea un archivo .env junto a este script (ver .env.example).")
 
 class SCADA_Bioreactor_Final(ctk.CTk):
     def __init__(self):
