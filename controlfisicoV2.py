@@ -571,16 +571,26 @@ class DashboardApp(ctk.CTk):
             self.rele_estados[5] = False
             self.rele_estados[6] = False
 
+        # Las bombas también son relés 2/3/4: se guardan en el mismo dict
+        # para que exista una sola fuente de verdad y un solo envío por ciclo
+        # (antes se mandaban los 6 relés y luego se repetían 2/3/4, dos
+        # veces por ciclo, sin necesidad).
+        self.rele_estados[2] = self.bomba_ph
+        self.rele_estados[3] = self.bomba_iptg
+        self.rele_estados[4] = self.bomba_cosecha
+
         self.lbl_etapa.configure(text=f"ETAPA: {self.etapa}")
         self.lbl_reles.configure(text=f"Relés: {self.rele_estados} | Bombas: pH={self.bomba_ph}, IPTG={self.bomba_iptg}, Cosecha={self.bomba_cosecha}")
 
-        if self.serial and self.serial.is_open:
-            for num, estado in self.rele_estados.items():
-                self.serial.write(f"RELE:{num},{'ON' if estado else 'OFF'}\n".encode())
-            self.serial.write(f"RELE:2,{'ON' if self.bomba_ph else 'OFF'}\n".encode())
-            self.serial.write(f"RELE:3,{'ON' if self.bomba_iptg else 'OFF'}\n".encode())
-            self.serial.write(f"RELE:4,{'ON' if self.bomba_cosecha else 'OFF'}\n".encode())
-            time.sleep(0.1)
+        self._enviar_estado_reles()
+
+    def _enviar_estado_reles(self):
+        """Envía el estado de los 6 relés al Arduino en un solo paso."""
+        if not (self.serial and self.serial.is_open):
+            return
+        for num in range(1, 7):
+            estado = self.rele_estados.get(num, False)
+            self.serial.write(f"RELE:{num},{'ON' if estado else 'OFF'}\n".encode())
 
     def actualizar_grafica(self):
         try:
@@ -623,9 +633,18 @@ class DashboardApp(ctk.CTk):
         self.emergencia = True
         self.etapa = "EMERGENCIA"
         self.lbl_emergencia.configure(text_color="red")
+
+        # Reflejar el apagado también en el estado interno, para que
+        # reanudar() y la siguiente lectura de GUI partan de un estado
+        # coherente (antes solo se apagaba en el Arduino, no en Python).
+        for num in self.rele_estados:
+            self.rele_estados[num] = False
+        self.bomba_ph = False
+        self.bomba_iptg = False
+        self.bomba_cosecha = False
+
         if self.serial:
-            for i in range(1, 7):
-                self.serial.write(f"RELE:{i},OFF\n".encode())
+            self._enviar_estado_reles()
             print("Comandos OFF enviados al Arduino")
         self.actualizar_emergencia_bd(1)
         self.btn_reanudar.configure(state="normal")
@@ -649,15 +668,14 @@ class DashboardApp(ctk.CTk):
                 self.rele_estados[1] = True
                 print("Reactivando calefacción por temperatura baja")
 
-        # Enviar TODOS los comandos al Arduino para sincronizar
+        # Las bombas también viven en rele_estados (ver controlar_actuadores_con_datos)
+        self.rele_estados[2] = self.bomba_ph
+        self.rele_estados[3] = self.bomba_iptg
+        self.rele_estados[4] = self.bomba_cosecha
+
         if self.serial and self.serial.is_open:
             print("Enviando comandos de reanudación al Arduino...")
-            for num, estado in self.rele_estados.items():
-                self.serial.write(f"RELE:{num},{'ON' if estado else 'OFF'}\n".encode())
-            self.serial.write(f"RELE:2,{'ON' if self.bomba_ph else 'OFF'}\n".encode())
-            self.serial.write(f"RELE:3,{'ON' if self.bomba_iptg else 'OFF'}\n".encode())
-            self.serial.write(f"RELE:4,{'ON' if self.bomba_cosecha else 'OFF'}\n".encode())
-            time.sleep(0.3)
+            self._enviar_estado_reles()
             print("Comandos de reanudación enviados")
         else:
             print("No hay conexión serial abierta para reanudar")
