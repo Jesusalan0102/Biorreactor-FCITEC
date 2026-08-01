@@ -3,3 +3,4 @@ pyserial
 pymysql
 matplotlib
 pillow
+python-dotenv
