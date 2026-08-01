@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Dashboard SCADA · Biorreactor</title>
+<link rel="stylesheet" href="/static/css/style.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"></script>
+</head>
+<body class="dashboard-body">
+
+  <header class="topbar">
+    <h1>DASHBOARD SCADA v2026</h1>
+    <div class="topbar-right">
+      <span id="status-dot" class="status offline">● OFFLINE</span>
+      <button id="btn-paro" class="btn-danger">PARO DE EMERGENCIA</button>
+      <button id="btn-reanudar" class="btn-success">REANUDAR SISTEMA</button>
+      <span class="user-tag">{{ username }}</span>
+      <a href="/logout" class="btn-secondary">CERRAR SESIÓN</a>
+    </div>
+  </header>
+
+  <section class="overview">
+    <div class="panel">
+      <h2>DIAGRAMA DE PROCESO</h2>
+      {% include "pid_svg.html" %}
+    </div>
+
+    <div class="panel gauges-panel">
+      <h2>VARIABLES DEL PROCESO</h2>
+      <div class="gauges-row">
+        <div class="gauge-box"><canvas id="gauge-temp" width="220" height="180"></canvas></div>
+        <div class="gauge-box"><canvas id="gauge-ph" width="220" height="180"></canvas></div>
+        <div class="gauge-box"><canvas id="gauge-od" width="220" height="180"></canvas></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="charts panel">
+    <h2>HISTÓRICO</h2>
+    <div class="charts-grid">
+      <canvas id="chart-temp" height="110"></canvas>
+      <canvas id="chart-ph" height="110"></canvas>
+      <canvas id="chart-od" height="110"></canvas>
+    </div>
+  </section>
+
+  <section class="events panel">
+    <h2>REGISTRO DE EVENTOS</h2>
+    <table id="events-table">
+      <thead><tr><th>Hora</th><th>Descripción</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <script src="/static/js/gauges.js"></script>
+  <script src="/static/js/pid.js"></script>
+  <script src="/static/js/dashboard.js"></script>
+</body>
+</html>

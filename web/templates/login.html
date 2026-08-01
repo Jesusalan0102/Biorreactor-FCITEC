@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SCADA Login · Biorreactor</title>
+<link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body class="login-body">
+  <div class="login-card">
+    <div class="badges">
+      <span class="badge">☣</span>
+      <span class="badge">🧪</span>
+    </div>
+    <h1>SCADA LOGIN</h1>
+
+    {% if error %}
+    <div class="alert-error">{{ error }}</div>
+    {% endif %}
+
+    <form method="post" action="/login" class="login-form">
+      <label>ID DE OPERADOR / USUARIO</label>
+      <input type="text" name="username" autocomplete="username" required autofocus>
+
+      <label>CÓDIGO DE ACCESO / CLAVE</label>
+      <input type="password" name="password" autocomplete="current-password" required>
+
+      <button type="submit" class="btn-primary">ACCEDER AL LABORATORIO</button>
+    </form>
+  </div>
+</body>
+</html>
