@@ -10,8 +10,11 @@ import threading
 import time
 import os
 from datetime import datetime
+from zoneinfo import ZoneInfo
 import pymysql
 from dotenv import load_dotenv
+
+TZ_TIJUANA = ZoneInfo("America/Tijuana")
 
 load_dotenv()
 
@@ -511,18 +514,27 @@ class DashboardApp(ctk.CTk):
             cursor = conn.cursor()
             query = """
             INSERT INTO datos_bioreactor (
+                fecha_hora,
                 temperatura, ph, od600,
                 rele1, rele2, rele3, rele4, rele5, rele6,
                 bomba_ph_on, bomba_iptg_on, bomba_cosecha_on,
                 sistema_funcionando
             ) VALUES (
+                %s,
                 %s, %s, %s,
                 %s, %s, %s, %s, %s, %s,
                 %s, %s, %s,
                 %s
             )
             """
+            # Se manda la hora de Tijuana explícita (naive) para que coincida
+            # con lo que espera web/db.py al calcular ONLINE/OFFLINE. Si se
+            # deja que MySQL use su DEFAULT CURRENT_TIMESTAMP (normalmente
+            # UTC en Clever Cloud), el dashboard web queda marcado OFFLINE
+            # aunque sí lleguen datos nuevos.
+            fecha_hora_tijuana = datetime.now(TZ_TIJUANA).strftime("%Y-%m-%d %H:%M:%S")
             valores = (
+                fecha_hora_tijuana,
                 temp, ph, od600,
                 int(self.rele_estados.get(1, 0)),
                 int(self.rele_estados.get(2, 0)),
