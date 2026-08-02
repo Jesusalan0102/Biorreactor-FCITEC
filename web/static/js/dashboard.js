@@ -47,6 +47,7 @@ function crearChart(canvasId, label, color) {
     data: { labels: [], datasets: [{ label, data: [], borderColor: color, backgroundColor: "transparent", tension: 0.25, pointRadius: 2 }] },
     options: {
       responsive: true,
+      maintainAspectRatio: false,
       animation: false,
       scales: {
         x: { ticks: { color: "#ccc", maxRotation: 45 }, grid: { color: "#274870" } },
