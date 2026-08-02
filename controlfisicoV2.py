@@ -127,10 +127,119 @@ class LoginApp(ctk.CTk):
 
     def activar_admin(self):
         if self.clave_entry.get() == CLAVE_MAESTRA:
+            self.construir_admin_frame()
             self.admin_frame.pack(fill="both", expand=True)
             messagebox.showinfo("Acceso", "Administración activada")
         else:
             messagebox.showerror("Error", "Clave incorrecta")
+
+    def construir_admin_frame(self):
+        """Arma el panel de administración de usuarios (lista + registrar + eliminar).
+        Se reconstruye cada vez que se activa, para no duplicar widgets."""
+        for w in self.admin_frame.winfo_children():
+            w.destroy()
+
+        ctk.CTkLabel(self.admin_frame, text="Usuarios registrados",
+                     font=("Arial", 16, "bold")).pack(pady=(10, 5))
+
+        self.lista_usuarios_frame = ctk.CTkScrollableFrame(self.admin_frame, height=200)
+        self.lista_usuarios_frame.pack(fill="both", expand=True, padx=10, pady=5)
+        self.refrescar_lista_usuarios()
+
+        ctk.CTkLabel(self.admin_frame, text="Registrar nuevo usuario",
+                     font=("Arial", 14, "bold")).pack(pady=(20, 5))
+
+        form = ctk.CTkFrame(self.admin_frame)
+        form.pack(pady=5)
+        ctk.CTkLabel(form, text="Usuario:").grid(row=0, column=0, padx=5, pady=5, sticky="e")
+        self.nuevo_user_entry = ctk.CTkEntry(form, width=200)
+        self.nuevo_user_entry.grid(row=0, column=1, padx=5, pady=5)
+        ctk.CTkLabel(form, text="Contraseña:").grid(row=1, column=0, padx=5, pady=5, sticky="e")
+        self.nuevo_pass_entry = ctk.CTkEntry(form, width=200, show="*")
+        self.nuevo_pass_entry.grid(row=1, column=1, padx=5, pady=5)
+        ctk.CTkButton(form, text="Registrar usuario",
+                      command=self.registrar_usuario).grid(row=2, column=0, columnspan=2, pady=10)
+
+    def refrescar_lista_usuarios(self):
+        for w in self.lista_usuarios_frame.winfo_children():
+            w.destroy()
+
+        conn = conectar_db()
+        if not conn:
+            ctk.CTkLabel(self.lista_usuarios_frame, text="No se pudo conectar a la BD").pack(pady=10)
+            return
+        try:
+            cursor = conn.cursor(pymysql.cursors.DictCursor)
+            cursor.execute("SELECT id, username FROM usuarios ORDER BY username")
+            usuarios = cursor.fetchall()
+        except Exception as e:
+            ctk.CTkLabel(self.lista_usuarios_frame, text=f"Error: {e}").pack(pady=10)
+            return
+        finally:
+            conn.close()
+
+        if not usuarios:
+            ctk.CTkLabel(self.lista_usuarios_frame, text="No hay usuarios registrados").pack(pady=10)
+            return
+
+        for u in usuarios:
+            fila = ctk.CTkFrame(self.lista_usuarios_frame)
+            fila.pack(fill="x", pady=2, padx=2)
+            ctk.CTkLabel(fila, text=u["username"], width=200, anchor="w").pack(side="left", padx=5)
+            ctk.CTkButton(
+                fila, text="Eliminar", width=80, fg_color="#C0392B", hover_color="#922B21",
+                command=lambda uid=u["id"], uname=u["username"]: self.eliminar_usuario(uid, uname)
+            ).pack(side="right", padx=5)
+
+    def registrar_usuario(self):
+        user = self.nuevo_user_entry.get().strip()
+        pwd = self.nuevo_pass_entry.get().strip()
+        if not user or not pwd:
+            messagebox.showerror("Error", "Usuario y contraseña son obligatorios")
+            return
+
+        conn = conectar_db()
+        if not conn:
+            messagebox.showerror("Error", "No se pudo conectar a la base de datos")
+            return
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT id FROM usuarios WHERE username=%s", (user,))
+            if cursor.fetchone():
+                messagebox.showerror("Error", f"El usuario '{user}' ya existe")
+                return
+            cursor.execute("INSERT INTO usuarios (username, password) VALUES (%s, %s)", (user, pwd))
+            conn.commit()
+            messagebox.showinfo("Éxito", f"Usuario '{user}' registrado correctamente")
+            self.nuevo_user_entry.delete(0, "end")
+            self.nuevo_pass_entry.delete(0, "end")
+            self.refrescar_lista_usuarios()
+        except Exception as e:
+            messagebox.showerror("Error DB", f"No se pudo registrar: {e}")
+        finally:
+            conn.close()
+
+    def eliminar_usuario(self, user_id, username):
+        if not messagebox.askyesno(
+            "Confirmar",
+            f"¿Eliminar al usuario '{username}'? Esta acción no se puede deshacer."
+        ):
+            return
+
+        conn = conectar_db()
+        if not conn:
+            messagebox.showerror("Error", "No se pudo conectar a la base de datos")
+            return
+        try:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM usuarios WHERE id=%s", (user_id,))
+            conn.commit()
+            messagebox.showinfo("Éxito", f"Usuario '{username}' eliminado")
+            self.refrescar_lista_usuarios()
+        except Exception as e:
+            messagebox.showerror("Error DB", f"No se pudo eliminar: {e}")
+        finally:
+            conn.close()
 
     def verificar_login(self):
         user = self.username_entry.get().strip()
@@ -709,7 +818,7 @@ class DashboardApp(ctk.CTk):
         if conn:
             try:
                 cursor = conn.cursor()
-                sql = "UPDATE sistema_control SET emergencia = %s WHERE id = 1"
+                sql = "UPDATE sistema_control SET emergencia = %s, comando_reanudar = 0 WHERE id = 1"
                 cursor.execute(sql, (estado,))
                 conn.commit()
                 print(f"BD actualizada: emergencia = {estado}")
