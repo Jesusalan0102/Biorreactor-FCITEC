@@ -84,6 +84,10 @@ class LoginApp(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title("Login - Control Bioreactor")
+
+        # Rate limiting simple: bloquea intentos tras 5 fallos, 5 min
+        self.intentos_fallidos = 0
+        self.bloqueado_hasta = 0
         self.update_idletasks()
         w = self.winfo_screenwidth()
         h = self.winfo_screenheight()
@@ -244,6 +248,15 @@ class LoginApp(ctk.CTk):
             conn.close()
 
     def verificar_login(self):
+        ahora = time.time()
+        if ahora < self.bloqueado_hasta:
+            restante = int(self.bloqueado_hasta - ahora)
+            messagebox.showerror(
+                "Bloqueado",
+                f"Demasiados intentos fallidos. Intenta de nuevo en ~{max(restante // 60, 1)} min."
+            )
+            return
+
         user = self.username_entry.get().strip()
         pwd = self.password_entry.get().strip()
         
@@ -296,6 +309,8 @@ class LoginApp(ctk.CTk):
                 messagebox.showerror("Error", "No se pudo conectar a la base de datos")
 
         if acceso_concedido:
+            self.intentos_fallidos = 0
+            self.bloqueado_hasta = 0
             print("Ocultando ventana de login...")
             self.withdraw()
             
@@ -313,6 +328,15 @@ class LoginApp(ctk.CTk):
                 self.deiconify(),
                 self.quit()
             ])
+        else:
+            self.intentos_fallidos += 1
+            if self.intentos_fallidos >= 5:
+                self.bloqueado_hasta = time.time() + 5 * 60
+                self.intentos_fallidos = 0
+                messagebox.showerror(
+                    "Bloqueado",
+                    "Demasiados intentos fallidos. Espera 5 minutos antes de reintentar."
+                )
 
 
 class DashboardApp(ctk.CTk):
@@ -608,10 +632,74 @@ class DashboardApp(ctk.CTk):
                             print("[FORMATO NO NUMÉRICO]")
                     else:
                         print("[LÍNEA NO VÁLIDA - no tiene 3 partes]")
+            except serial.SerialException as se:
+                print(f"[USB DESCONECTADO] {se}")
+                self.after(0, lambda: self._manejar_desconexion_arduino(str(se)))
+                break
             except Exception as e:
                 print(f"[ERROR GRAVE EN LECTURA] {e}")
+                self.after(0, lambda: self._manejar_desconexion_arduino(str(e)))
                 break
             time.sleep(0.05)
+
+    def _manejar_desconexion_arduino(self, motivo=""):
+        """Se corre en el hilo principal (vía self.after) cuando el hilo de
+        lectura detecta que se perdió la conexión serial (p. ej. USB
+        desconectado). Deja la UI en un estado claro y arranca reintentos
+        automáticos de reconexión."""
+        puerto_previo = self.puerto_var.get() if hasattr(self, "puerto_var") else None
+
+        if self.serial:
+            try:
+                self.serial.close()
+            except Exception:
+                pass
+        self.serial = None
+
+        self.btn_conectar.configure(state="normal")
+        self.btn_desconectar.configure(state="disabled")
+        self.btn_iniciar_cultivo.configure(state="disabled")
+        self.btn_calibracion.configure(state="disabled")
+        self.lbl_arranque.configure(text_color="gray")
+        self.lbl_falla.configure(text_color="red")
+        self.lbl_etapa.configure(text="ETAPA: DESCONECTADO (USB perdido)")
+        self.lbl_ultimo.configure(text="Última lectura: --- (reconectando...)")
+
+        if not getattr(self, "_aviso_desconexion_mostrado", False):
+            self._aviso_desconexion_mostrado = True
+            messagebox.showwarning(
+                "Conexión perdida",
+                f"Se perdió la conexión con el Arduino ({motivo}).\n"
+                "Reintentando reconectar automáticamente cada 10s..."
+            )
+
+        if puerto_previo:
+            self.after(10000, lambda: self._intentar_reconexion(puerto_previo))
+
+    def _intentar_reconexion(self, puerto):
+        if self.serial and self.serial.is_open:
+            return  # ya se reconectó por otro medio, no hacer nada
+
+        try:
+            self.serial = serial.Serial(puerto, 9600, timeout=1)
+            time.sleep(2)
+
+            self.btn_conectar.configure(state="disabled")
+            self.btn_desconectar.configure(state="normal")
+            self.btn_iniciar_cultivo.configure(state="normal")
+            self.btn_calibracion.configure(state="normal")
+            self.lbl_etapa.configure(text="ETAPA: CONECTADO")
+            self.lbl_arranque.configure(text_color="green")
+            self.lbl_falla.configure(text_color="gray")
+            self._aviso_desconexion_mostrado = False
+
+            threading.Thread(target=self.hilo_lectura, daemon=True).start()
+            self.after(2500, self.sincronizar_calibracion_inicial)
+            print(f"[RECONEXIÓN OK] {puerto}")
+
+        except Exception as e:
+            print(f"[RECONEXIÓN FALLIDA] {e} - reintentando en 10s...")
+            self.after(10000, lambda: self._intentar_reconexion(puerto))
 
     def actualizar_gui_periodica(self):
         if not self.is_running:
