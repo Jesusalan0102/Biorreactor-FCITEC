@@ -13,6 +13,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 import pymysql
 from dotenv import load_dotenv
+import bcrypt
 
 TZ_TIJUANA = ZoneInfo("America/Tijuana")
 
@@ -208,7 +209,8 @@ class LoginApp(ctk.CTk):
             if cursor.fetchone():
                 messagebox.showerror("Error", f"El usuario '{user}' ya existe")
                 return
-            cursor.execute("INSERT INTO usuarios (username, password) VALUES (%s, %s)", (user, pwd))
+            hash_pwd = bcrypt.hashpw(pwd.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+            cursor.execute("INSERT INTO usuarios (username, password) VALUES (%s, %s)", (user, hash_pwd))
             conn.commit()
             messagebox.showinfo("Éxito", f"Usuario '{user}' registrado correctamente")
             self.nuevo_user_entry.delete(0, "end")
@@ -246,7 +248,6 @@ class LoginApp(ctk.CTk):
         pwd = self.password_entry.get().strip()
         
         print(f"Usuario ingresado: '{user}'")
-        print(f"Contraseña ingresada: '{pwd}'")
         
         acceso_concedido = False
         self.usuario_id = None
@@ -261,13 +262,30 @@ class LoginApp(ctk.CTk):
                 try:
                     cursor = conn.cursor(pymysql.cursors.DictCursor)
                     print("Conexión DB OK, ejecutando query...")
-                    cursor.execute("SELECT * FROM usuarios WHERE username=%s AND password=%s", (user, pwd))
+                    cursor.execute("SELECT id, password FROM usuarios WHERE username=%s", (user,))
                     result = cursor.fetchone()
-                    print("Resultado de la query:", result)
                     if result:
-                        print("Usuario encontrado en DB → abriendo Dashboard")
-                        self.usuario_id = result['id']
-                        acceso_concedido = True
+                        stored = result["password"] or ""
+                        pwd_bytes = pwd.encode("utf-8")
+                        valido = False
+                        if stored.startswith(("$2a$", "$2b$", "$2y$")):
+                            valido = bcrypt.checkpw(pwd_bytes, stored.encode("utf-8"))
+                        elif stored == pwd:
+                            # Fila vieja en texto plano: validar una vez y migrar a hash
+                            nuevo_hash = bcrypt.hashpw(pwd_bytes, bcrypt.gensalt()).decode("utf-8")
+                            cursor.execute(
+                                "UPDATE usuarios SET password=%s WHERE id=%s",
+                                (nuevo_hash, result["id"]),
+                            )
+                            conn.commit()
+                            valido = True
+
+                        if valido:
+                            print("Usuario encontrado en DB → abriendo Dashboard")
+                            self.usuario_id = result['id']
+                            acceso_concedido = True
+                        else:
+                            messagebox.showerror("Error", "Credenciales incorrectas")
                     else:
                         messagebox.showerror("Error", "Credenciales incorrectas (no encontrado en DB)")
                 except Exception as e:
