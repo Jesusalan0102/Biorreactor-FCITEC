@@ -46,3 +46,14 @@ async def api_reanudar(request: Request):
         )
         return {"ok": True}
     return JSONResponse({"ok": False, "error": "No se pudo reanudar"}, status_code=500)
+
+
+@router.post("/api/limpiar-datos")
+async def api_limpiar_datos(request: Request):
+    """Dispara manualmente la limpieza de retención (normalmente corre
+    sola una vez al día). Útil para probarla sin esperar 24h."""
+    if not usuario_logueado(request):
+        return JSONResponse({"ok": False, "error": "No autenticado"}, status_code=401)
+
+    resultado = await run_in_threadpool(db.limpiar_datos_antiguos)
+    return resultado
