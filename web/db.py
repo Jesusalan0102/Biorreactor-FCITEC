@@ -235,3 +235,35 @@ def reanudar_sistema() -> bool:
         return False
     finally:
         conn.close()
+
+
+def limpiar_datos_antiguos(dias_datos: int = 30, dias_eventos: int = 90) -> dict:
+    """Borra filas viejas de datos_bioreactor y eventos para que el addon
+    MySQL (plan DEV, espacio limitado) no se llene con el tiempo. Se llama
+    sola, una vez al día, desde una tarea en segundo plano en main.py -
+    no depende de ningún cron externo de Clever Cloud."""
+    conn = conectar()
+    if not conn:
+        return {"ok": False, "error": "sin conexión a BD"}
+    resultado = {"ok": True, "filas_datos_borradas": 0, "filas_eventos_borradas": 0}
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM datos_bioreactor WHERE fecha_hora < NOW() - INTERVAL %s DAY",
+                (dias_datos,),
+            )
+            resultado["filas_datos_borradas"] = cur.rowcount
+
+            cur.execute(
+                "DELETE FROM eventos WHERE hora < NOW() - INTERVAL %s DAY",
+                (dias_eventos,),
+            )
+            resultado["filas_eventos_borradas"] = cur.rowcount
+        conn.commit()
+        print(f"[DB] Limpieza de retención: {resultado}")
+    except Exception as e:
+        print(f"[DB] Error en limpieza de retención: {e}")
+        resultado = {"ok": False, "error": str(e)}
+    finally:
+        conn.close()
+    return resultado
