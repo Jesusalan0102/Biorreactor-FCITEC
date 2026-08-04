@@ -4,3 +4,4 @@ pymysql
 matplotlib
 pillow
 python-dotenv
+bcrypt
