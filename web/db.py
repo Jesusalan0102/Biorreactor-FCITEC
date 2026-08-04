@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 
 import pymysql
 import pymysql.cursors
+import bcrypt
 
 TZ_TIJUANA = ZoneInfo("America/Tijuana")
 
@@ -49,20 +50,41 @@ def conectar():
 
 
 def validar_usuario(username: str, password: str) -> bool:
-    """Valida contra la tabla usuarios (username/password), igual que la
-    app de escritorio. NOTA: si en el futuro migras a contraseñas
-    hasheadas (bcrypt, como ya haces en carrier-transicold), ajusta
-    aquí la comparación."""
+    """Valida contra la tabla usuarios (username + hash bcrypt), igual que
+    carrier-transicold. Si encuentra una fila vieja con contraseña en texto
+    plano (de antes de la migración), valida por comparación directa esa
+    única vez y de inmediato la re-guarda como hash bcrypt, para que quede
+    migrada sin necesitar intervención manual."""
     conn = conectar()
     if not conn:
         return False
     try:
-        with conn.cursor() as cur:
+        with conn.cursor(pymysql.cursors.DictCursor) as cur:
             cur.execute(
-                "SELECT id FROM usuarios WHERE username = %s AND password = %s",
-                (username, password),
+                "SELECT id, password FROM usuarios WHERE username = %s",
+                (username,),
             )
-            return cur.fetchone() is not None
+            row = cur.fetchone()
+            if not row:
+                return False
+
+            stored = row["password"] or ""
+            pwd_bytes = password.encode("utf-8")
+
+            # Hash bcrypt válido: siempre empieza con $2b$ / $2a$ / $2y$
+            if stored.startswith(("$2a$", "$2b$", "$2y$")):
+                return bcrypt.checkpw(pwd_bytes, stored.encode("utf-8"))
+
+            # Fila vieja en texto plano: comparar directo y migrar a hash
+            if stored == password:
+                nuevo_hash = bcrypt.hashpw(pwd_bytes, bcrypt.gensalt()).decode("utf-8")
+                cur.execute(
+                    "UPDATE usuarios SET password = %s WHERE id = %s",
+                    (nuevo_hash, row["id"]),
+                )
+                conn.commit()
+                return True
+            return False
     except Exception as e:
         print(f"[DB] Error validando usuario: {e}")
         return False
@@ -183,7 +205,8 @@ def activar_paro() -> bool:
         with conn.cursor() as cur:
             cur.execute(
                 """UPDATE sistema_control
-                   SET emergencia = 1, rele1 = 0, rele2 = 0, rele3 = 0,
+                   SET emergencia = 1, comando_reanudar = 0,
+                       rele1 = 0, rele2 = 0, rele3 = 0,
                        rele4 = 0, rele5 = 0, rele6 = 0
                    WHERE id = 1"""
             )
