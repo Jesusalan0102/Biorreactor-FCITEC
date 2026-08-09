@@ -266,7 +266,7 @@ def conectar_db():
             password=DB_PASSWORD,
             database=DB_NAME,
             port=DB_PORT,
-            connect_timeout=30
+            connect_timeout=8
         )
         print("¡CONEXIÓN ÉXITO con PyMySQL!")
         return conn
@@ -644,12 +644,19 @@ class LoginApp(ctk.CTk):
             dashboard.lift()
             dashboard.focus_force()
             dashboard.update()
-            
+
+            # IMPORTANTE: NO se debe llamar a self.quit() aquí. quit() detiene
+            # por completo el mainloop de Tkinter (el único que existe en todo
+            # el programa, ver app.mainloop() al final del archivo). Si se
+            # detiene, la ventana de login queda "zombie": se ve pero ya no
+            # procesa clicks ni el botón de cerrar, y hay que matar el proceso
+            # a mano. En su lugar, delegamos el cierre a dashboard.on_closing(),
+            # que limpia hilos/after()/serial/BD y solo destruye esta ventana
+            # (Toplevel), dejando el mainloop principal vivo.
             dashboard.protocol("WM_DELETE_WINDOW", lambda: [
                 print("Cerrando dashboard → volviendo a login"),
-                dashboard.destroy(),
-                self.deiconify(),
-                self.quit()
+                dashboard.on_closing(),
+                self.deiconify()
             ])
 
 
@@ -696,6 +703,7 @@ class PIDDiagram(ctk.CTkFrame):
         self._dibujar_grid()
         self._dibujar_esquema()
         self._fase = 0
+        self._animando = True
         self._animar()
 
     def _dibujar_grid(self):
@@ -781,8 +789,14 @@ class PIDDiagram(ctk.CTkFrame):
         c.itemconfig(self.linea_cosecha_a, fill=on if cosecha_on else off)
         c.itemconfig(self.linea_cosecha_b, fill=on if cosecha_on else off)
 
+    def detener(self):
+        """Detiene la animación (llamar al cerrar el Dashboard)."""
+        self._animando = False
+
     def _animar(self):
         """Flujo animado (línea punteada en movimiento) en las tuberías activas."""
+        if not self._animando or not self.winfo_exists():
+            return
         self._fase = (self._fase + 1) % 20
         for linea in self._lineas_animables:
             if self.canvas.itemcget(linea, "fill") == COLOR_LED_ON:
@@ -808,6 +822,16 @@ class DashboardApp(ctk.CTk):
         self.etapa = "READY"
         self.emergencia = False
         self.pausado = False
+
+        # Conexión persistente a BD: se abre una sola vez y se reutiliza con
+        # ping(reconnect=True) en vez de abrir/cerrar una conexión nueva en
+        # cada operación (evita el error 2013 "Lost connection" por exceso
+        # de aperturas de socket y reduce carga en el servidor).
+        self.db_conn = None
+
+        # Ids de los after() periódicos, para poder cancelarlos limpiamente
+        # al cerrar el Dashboard (ver on_closing).
+        self._after_ids = {}
 
         self.rele_estados = {1: False, 2: False, 3: False, 4: False, 5: False, 6: False}
         self.bomba_ph = False
@@ -991,9 +1015,11 @@ class DashboardApp(ctk.CTk):
     def _tick_reloj(self):
         """Reloj de la barra de estado con hora de Tijuana (referencia visual constante,
         útil para saber de un vistazo si la app sigue viva)."""
+        if not self.is_running or not self.winfo_exists():
+            return
         ahora = datetime.now(TZ_TIJUANA).strftime("%H:%M:%S")
         self.lbl_reloj.configure(text=ahora)
-        self.after(1000, self._tick_reloj)
+        self._after_ids['reloj'] = self.after(1000, self._tick_reloj)
 
     def refrescar_puertos(self):
         puertos = [p.device for p in serial.tools.list_ports.comports()]
@@ -1169,10 +1195,28 @@ class DashboardApp(ctk.CTk):
         self.pid.actualizar_estado(self.rele_estados)
 
         if self.is_running:
-            self.after(5000, self.actualizar_gui_periodica)  # Cada 5 segundos para reducir carga
+            self._after_ids['gui'] = self.after(5000, self.actualizar_gui_periodica)  # Cada 5 segundos para reducir carga
+
+    def get_db_conn(self):
+        """Devuelve una conexión persistente y viva a la BD, reconectando
+        automáticamente si el servidor la cerró (evita el error 2013 'Lost
+        connection' y el churn de abrir/cerrar un socket por cada operación)."""
+        try:
+            if self.db_conn is None:
+                self.db_conn = conectar_db()
+            else:
+                self.db_conn.ping(reconnect=True)
+        except Exception as e:
+            print(f"[BD] Conexión perdida, reconectando: {e}")
+            try:
+                self.db_conn = conectar_db()
+            except Exception as e2:
+                print(f"[BD] No se pudo reconectar: {e2}")
+                self.db_conn = None
+        return self.db_conn
 
     def guardar_en_bd(self, temp, ph, od600):
-        conn = conectar_db()
+        conn = self.get_db_conn()
         if not conn:
             print("[BD] No se pudo conectar para guardar")
             self.lbl_conexion_bd.configure(text="●  BD: sin conexión", text_color=COLOR_LED_ALERTA)
@@ -1226,9 +1270,10 @@ class DashboardApp(ctk.CTk):
             print(f"[ERROR BD Guardado] Mensaje: {str(e)}")
             import traceback
             traceback.print_exc()
-            mostrar_error(self, "Error DB", f"Error al guardar datos:\n{str(e)}")
-        finally:
-            conn.close()
+            self.lbl_conexion_bd.configure(text="●  BD: error al guardar", text_color=COLOR_LED_ALERTA)
+            # Se invalida la conexión para forzar una reconexión limpia en el
+            # próximo ciclo, en vez de seguir usando un socket ya roto.
+            self.db_conn = None
 
     def controlar_actuadores_con_datos(self, temp, ph, od600):
         if self.emergencia or self.pausado:
@@ -1375,7 +1420,7 @@ class DashboardApp(ctk.CTk):
         mostrar_info(self, "Sistema", "Sistema reanudado completamente - relés reactivados")
 
     def actualizar_emergencia_bd(self, estado):
-        conn = conectar_db()
+        conn = self.get_db_conn()
         if conn:
             try:
                 cursor = conn.cursor()
@@ -1385,12 +1430,14 @@ class DashboardApp(ctk.CTk):
                 print(f"BD actualizada: emergencia = {estado}")
             except Exception as e:
                 print(f"Error actualizando emergencia en BD: {e}")
-            finally:
-                conn.close()
+                self.db_conn = None
 
     def chequear_emergencia_periodico(self):
+        if not self.is_running:
+            return
+
         print("Chequeando BD para emergencia/reanudar (cada 3s)...")
-        conn = conectar_db()
+        conn = self.get_db_conn()
         if conn:
             try:
                 cursor = conn.cursor()
@@ -1410,13 +1457,12 @@ class DashboardApp(ctk.CTk):
                         print("Flag reanudar reseteado en BD")
             except Exception as e:
                 print(f"Error al chequear BD: {e}")
-            finally:
-                conn.close()
+                self.db_conn = None
         else:
             print("No se pudo conectar a BD para chequeo")
 
         if self.is_running:
-            self.after(3000, self.chequear_emergencia_periodico)
+            self._after_ids['emergencia'] = self.after(3000, self.chequear_emergencia_periodico)
 
     # ---------------- Calibración de sensores ----------------
 
@@ -1436,7 +1482,7 @@ class DashboardApp(ctk.CTk):
     def obtener_ultima_calibracion_bd(self, sensor):
         """Devuelve {'slope':..., 'intercept':...} con la calibración más
         reciente guardada para ese sensor, o None si nunca se ha calibrado."""
-        conn = conectar_db()
+        conn = self.get_db_conn()
         if not conn:
             return None
         try:
@@ -1449,12 +1495,11 @@ class DashboardApp(ctk.CTk):
             return cursor.fetchone()
         except Exception as e:
             print(f"[ERROR BD calibración] {e}")
+            self.db_conn = None
             return None
-        finally:
-            conn.close()
 
     def guardar_calibracion_bd(self, sensor, slope, intercept, notas=""):
-        conn = conectar_db()
+        conn = self.get_db_conn()
         if not conn:
             print("[BD] No se pudo conectar para guardar calibración")
             return False
@@ -1471,9 +1516,8 @@ class DashboardApp(ctk.CTk):
             return True
         except Exception as e:
             print(f"[ERROR BD] No se pudo guardar calibración de {sensor}: {e}")
+            self.db_conn = None
             return False
-        finally:
-            conn.close()
 
     def sincronizar_calibracion_inicial(self):
         """Al conectar: la BD es la fuente de verdad. Si hay calibración
@@ -1512,10 +1556,57 @@ class DashboardApp(ctk.CTk):
         self.ventana_calibracion = CalibracionWindow(self)
 
     def on_closing(self):
+        """Limpieza completa al cerrar el Dashboard: cancela los after()
+        periódicos, detiene la animación del P&ID, cierra el puerto serial
+        y la conexión a BD, y finalmente destruye la ventana. No llama a
+        quit() porque eso detendría el mainloop principal de Tkinter (el
+        único que existe en todo el programa) y dejaría la ventana de login
+        congelada e imposible de cerrar."""
+        if not self.is_running:
+            # Ya se está cerrando (evita doble ejecución si el usuario
+            # dispara el cierre dos veces, ej. click rápido doble en la X).
+            return
+
+        print("Cerrando Dashboard - limpiando recursos...")
         self.is_running = False
+
+        for nombre, after_id in self._after_ids.items():
+            try:
+                self.after_cancel(after_id)
+            except Exception:
+                pass
+        self._after_ids = {}
+
+        if hasattr(self, "pid"):
+            try:
+                self.pid.detener()
+            except Exception:
+                pass
+
         if self.serial and self.serial.is_open:
-            self.serial.close()
-        self.destroy()
+            try:
+                self.serial.close()
+            except Exception:
+                pass
+            self.serial = None
+
+        if self.db_conn:
+            try:
+                self.db_conn.close()
+            except Exception:
+                pass
+            self.db_conn = None
+
+        if self.ventana_calibracion is not None and self.ventana_calibracion.winfo_exists():
+            try:
+                self.ventana_calibracion.destroy()
+            except Exception:
+                pass
+
+        try:
+            self.destroy()
+        except Exception:
+            pass
 
 
 class CalibracionWindow(ctk.CTkToplevel):
