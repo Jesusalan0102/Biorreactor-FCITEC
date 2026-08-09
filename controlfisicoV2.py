@@ -13,19 +13,18 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 import pymysql
 from dotenv import load_dotenv
-import bcrypt
 
 TZ_TIJUANA = ZoneInfo("America/Tijuana")
 
 load_dotenv()
 
-# Configuración base de datos (Clever Cloud) - vía variables de entorno (.env local)
-DB_HOST = os.environ.get('DB_HOST', '')
-DB_USER = os.environ.get('DB_USER', '')
-DB_PASSWORD = os.environ.get('DB_PASSWORD', '')
-DB_NAME = os.environ.get('DB_NAME', '')
-DB_PORT = int(os.environ.get('DB_PORT', '3306'))
-CLAVE_MAESTRA = os.environ.get('CLAVE_MAESTRA', '')
+# Configuración base de datos (Clever Cloud)
+DB_HOST = 'bfn0iql8vbpvwgbmq9zk-mysql.services.clever-cloud.com'
+DB_USER = 'unluguvpazazzigt'
+DB_PASSWORD = '63OBli4DqSLiqrR6yE25'
+DB_NAME = 'bfn0iql8vbpvwgbmq9zk'
+DB_PORT = 3306
+CLAVE_MAESTRA = '1270345'
 
 if not all([DB_HOST, DB_USER, DB_PASSWORD, DB_NAME]):
     print("[ADVERTENCIA] Faltan variables de entorno de base de datos. "
@@ -84,10 +83,6 @@ class LoginApp(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title("Login - Control Bioreactor")
-
-        # Rate limiting simple: bloquea intentos tras 5 fallos, 5 min
-        self.intentos_fallidos = 0
-        self.bloqueado_hasta = 0
         self.update_idletasks()
         w = self.winfo_screenwidth()
         h = self.winfo_screenheight()
@@ -132,135 +127,17 @@ class LoginApp(ctk.CTk):
 
     def activar_admin(self):
         if self.clave_entry.get() == CLAVE_MAESTRA:
-            self.construir_admin_frame()
             self.admin_frame.pack(fill="both", expand=True)
             messagebox.showinfo("Acceso", "Administración activada")
         else:
             messagebox.showerror("Error", "Clave incorrecta")
 
-    def construir_admin_frame(self):
-        """Arma el panel de administración de usuarios (lista + registrar + eliminar).
-        Se reconstruye cada vez que se activa, para no duplicar widgets."""
-        for w in self.admin_frame.winfo_children():
-            w.destroy()
-
-        ctk.CTkLabel(self.admin_frame, text="Usuarios registrados",
-                     font=("Arial", 16, "bold")).pack(pady=(10, 5))
-
-        self.lista_usuarios_frame = ctk.CTkScrollableFrame(self.admin_frame, height=200)
-        self.lista_usuarios_frame.pack(fill="both", expand=True, padx=10, pady=5)
-        self.refrescar_lista_usuarios()
-
-        ctk.CTkLabel(self.admin_frame, text="Registrar nuevo usuario",
-                     font=("Arial", 14, "bold")).pack(pady=(20, 5))
-
-        form = ctk.CTkFrame(self.admin_frame)
-        form.pack(pady=5)
-        ctk.CTkLabel(form, text="Usuario:").grid(row=0, column=0, padx=5, pady=5, sticky="e")
-        self.nuevo_user_entry = ctk.CTkEntry(form, width=200)
-        self.nuevo_user_entry.grid(row=0, column=1, padx=5, pady=5)
-        ctk.CTkLabel(form, text="Contraseña:").grid(row=1, column=0, padx=5, pady=5, sticky="e")
-        self.nuevo_pass_entry = ctk.CTkEntry(form, width=200, show="*")
-        self.nuevo_pass_entry.grid(row=1, column=1, padx=5, pady=5)
-        ctk.CTkButton(form, text="Registrar usuario",
-                      command=self.registrar_usuario).grid(row=2, column=0, columnspan=2, pady=10)
-
-    def refrescar_lista_usuarios(self):
-        for w in self.lista_usuarios_frame.winfo_children():
-            w.destroy()
-
-        conn = conectar_db()
-        if not conn:
-            ctk.CTkLabel(self.lista_usuarios_frame, text="No se pudo conectar a la BD").pack(pady=10)
-            return
-        try:
-            cursor = conn.cursor(pymysql.cursors.DictCursor)
-            cursor.execute("SELECT id, username FROM usuarios ORDER BY username")
-            usuarios = cursor.fetchall()
-        except Exception as e:
-            ctk.CTkLabel(self.lista_usuarios_frame, text=f"Error: {e}").pack(pady=10)
-            return
-        finally:
-            conn.close()
-
-        if not usuarios:
-            ctk.CTkLabel(self.lista_usuarios_frame, text="No hay usuarios registrados").pack(pady=10)
-            return
-
-        for u in usuarios:
-            fila = ctk.CTkFrame(self.lista_usuarios_frame)
-            fila.pack(fill="x", pady=2, padx=2)
-            ctk.CTkLabel(fila, text=u["username"], width=200, anchor="w").pack(side="left", padx=5)
-            ctk.CTkButton(
-                fila, text="Eliminar", width=80, fg_color="#C0392B", hover_color="#922B21",
-                command=lambda uid=u["id"], uname=u["username"]: self.eliminar_usuario(uid, uname)
-            ).pack(side="right", padx=5)
-
-    def registrar_usuario(self):
-        user = self.nuevo_user_entry.get().strip()
-        pwd = self.nuevo_pass_entry.get().strip()
-        if not user or not pwd:
-            messagebox.showerror("Error", "Usuario y contraseña son obligatorios")
-            return
-
-        conn = conectar_db()
-        if not conn:
-            messagebox.showerror("Error", "No se pudo conectar a la base de datos")
-            return
-        try:
-            cursor = conn.cursor()
-            cursor.execute("SELECT id FROM usuarios WHERE username=%s", (user,))
-            if cursor.fetchone():
-                messagebox.showerror("Error", f"El usuario '{user}' ya existe")
-                return
-            hash_pwd = bcrypt.hashpw(pwd.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
-            cursor.execute("INSERT INTO usuarios (username, password) VALUES (%s, %s)", (user, hash_pwd))
-            conn.commit()
-            messagebox.showinfo("Éxito", f"Usuario '{user}' registrado correctamente")
-            self.nuevo_user_entry.delete(0, "end")
-            self.nuevo_pass_entry.delete(0, "end")
-            self.refrescar_lista_usuarios()
-        except Exception as e:
-            messagebox.showerror("Error DB", f"No se pudo registrar: {e}")
-        finally:
-            conn.close()
-
-    def eliminar_usuario(self, user_id, username):
-        if not messagebox.askyesno(
-            "Confirmar",
-            f"¿Eliminar al usuario '{username}'? Esta acción no se puede deshacer."
-        ):
-            return
-
-        conn = conectar_db()
-        if not conn:
-            messagebox.showerror("Error", "No se pudo conectar a la base de datos")
-            return
-        try:
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM usuarios WHERE id=%s", (user_id,))
-            conn.commit()
-            messagebox.showinfo("Éxito", f"Usuario '{username}' eliminado")
-            self.refrescar_lista_usuarios()
-        except Exception as e:
-            messagebox.showerror("Error DB", f"No se pudo eliminar: {e}")
-        finally:
-            conn.close()
-
     def verificar_login(self):
-        ahora = time.time()
-        if ahora < self.bloqueado_hasta:
-            restante = int(self.bloqueado_hasta - ahora)
-            messagebox.showerror(
-                "Bloqueado",
-                f"Demasiados intentos fallidos. Intenta de nuevo en ~{max(restante // 60, 1)} min."
-            )
-            return
-
         user = self.username_entry.get().strip()
         pwd = self.password_entry.get().strip()
         
         print(f"Usuario ingresado: '{user}'")
+        print(f"Contraseña ingresada: '{pwd}'")
         
         acceso_concedido = False
         self.usuario_id = None
@@ -275,30 +152,13 @@ class LoginApp(ctk.CTk):
                 try:
                     cursor = conn.cursor(pymysql.cursors.DictCursor)
                     print("Conexión DB OK, ejecutando query...")
-                    cursor.execute("SELECT id, password FROM usuarios WHERE username=%s", (user,))
+                    cursor.execute("SELECT * FROM usuarios WHERE username=%s AND password=%s", (user, pwd))
                     result = cursor.fetchone()
+                    print("Resultado de la query:", result)
                     if result:
-                        stored = result["password"] or ""
-                        pwd_bytes = pwd.encode("utf-8")
-                        valido = False
-                        if stored.startswith(("$2a$", "$2b$", "$2y$")):
-                            valido = bcrypt.checkpw(pwd_bytes, stored.encode("utf-8"))
-                        elif stored == pwd:
-                            # Fila vieja en texto plano: validar una vez y migrar a hash
-                            nuevo_hash = bcrypt.hashpw(pwd_bytes, bcrypt.gensalt()).decode("utf-8")
-                            cursor.execute(
-                                "UPDATE usuarios SET password=%s WHERE id=%s",
-                                (nuevo_hash, result["id"]),
-                            )
-                            conn.commit()
-                            valido = True
-
-                        if valido:
-                            print("Usuario encontrado en DB → abriendo Dashboard")
-                            self.usuario_id = result['id']
-                            acceso_concedido = True
-                        else:
-                            messagebox.showerror("Error", "Credenciales incorrectas")
+                        print("Usuario encontrado en DB → abriendo Dashboard")
+                        self.usuario_id = result['id']
+                        acceso_concedido = True
                     else:
                         messagebox.showerror("Error", "Credenciales incorrectas (no encontrado en DB)")
                 except Exception as e:
@@ -309,8 +169,6 @@ class LoginApp(ctk.CTk):
                 messagebox.showerror("Error", "No se pudo conectar a la base de datos")
 
         if acceso_concedido:
-            self.intentos_fallidos = 0
-            self.bloqueado_hasta = 0
             print("Ocultando ventana de login...")
             self.withdraw()
             
@@ -328,15 +186,6 @@ class LoginApp(ctk.CTk):
                 self.deiconify(),
                 self.quit()
             ])
-        else:
-            self.intentos_fallidos += 1
-            if self.intentos_fallidos >= 5:
-                self.bloqueado_hasta = time.time() + 5 * 60
-                self.intentos_fallidos = 0
-                messagebox.showerror(
-                    "Bloqueado",
-                    "Demasiados intentos fallidos. Espera 5 minutos antes de reintentar."
-                )
 
 
 class DashboardApp(ctk.CTk):
@@ -632,74 +481,10 @@ class DashboardApp(ctk.CTk):
                             print("[FORMATO NO NUMÉRICO]")
                     else:
                         print("[LÍNEA NO VÁLIDA - no tiene 3 partes]")
-            except serial.SerialException as se:
-                print(f"[USB DESCONECTADO] {se}")
-                self.after(0, lambda: self._manejar_desconexion_arduino(str(se)))
-                break
             except Exception as e:
                 print(f"[ERROR GRAVE EN LECTURA] {e}")
-                self.after(0, lambda: self._manejar_desconexion_arduino(str(e)))
                 break
             time.sleep(0.05)
-
-    def _manejar_desconexion_arduino(self, motivo=""):
-        """Se corre en el hilo principal (vía self.after) cuando el hilo de
-        lectura detecta que se perdió la conexión serial (p. ej. USB
-        desconectado). Deja la UI en un estado claro y arranca reintentos
-        automáticos de reconexión."""
-        puerto_previo = self.puerto_var.get() if hasattr(self, "puerto_var") else None
-
-        if self.serial:
-            try:
-                self.serial.close()
-            except Exception:
-                pass
-        self.serial = None
-
-        self.btn_conectar.configure(state="normal")
-        self.btn_desconectar.configure(state="disabled")
-        self.btn_iniciar_cultivo.configure(state="disabled")
-        self.btn_calibracion.configure(state="disabled")
-        self.lbl_arranque.configure(text_color="gray")
-        self.lbl_falla.configure(text_color="red")
-        self.lbl_etapa.configure(text="ETAPA: DESCONECTADO (USB perdido)")
-        self.lbl_ultimo.configure(text="Última lectura: --- (reconectando...)")
-
-        if not getattr(self, "_aviso_desconexion_mostrado", False):
-            self._aviso_desconexion_mostrado = True
-            messagebox.showwarning(
-                "Conexión perdida",
-                f"Se perdió la conexión con el Arduino ({motivo}).\n"
-                "Reintentando reconectar automáticamente cada 10s..."
-            )
-
-        if puerto_previo:
-            self.after(10000, lambda: self._intentar_reconexion(puerto_previo))
-
-    def _intentar_reconexion(self, puerto):
-        if self.serial and self.serial.is_open:
-            return  # ya se reconectó por otro medio, no hacer nada
-
-        try:
-            self.serial = serial.Serial(puerto, 9600, timeout=1)
-            time.sleep(2)
-
-            self.btn_conectar.configure(state="disabled")
-            self.btn_desconectar.configure(state="normal")
-            self.btn_iniciar_cultivo.configure(state="normal")
-            self.btn_calibracion.configure(state="normal")
-            self.lbl_etapa.configure(text="ETAPA: CONECTADO")
-            self.lbl_arranque.configure(text_color="green")
-            self.lbl_falla.configure(text_color="gray")
-            self._aviso_desconexion_mostrado = False
-
-            threading.Thread(target=self.hilo_lectura, daemon=True).start()
-            self.after(2500, self.sincronizar_calibracion_inicial)
-            print(f"[RECONEXIÓN OK] {puerto}")
-
-        except Exception as e:
-            print(f"[RECONEXIÓN FALLIDA] {e} - reintentando en 10s...")
-            self.after(10000, lambda: self._intentar_reconexion(puerto))
 
     def actualizar_gui_periodica(self):
         if not self.is_running:
@@ -924,7 +709,7 @@ class DashboardApp(ctk.CTk):
         if conn:
             try:
                 cursor = conn.cursor()
-                sql = "UPDATE sistema_control SET emergencia = %s, comando_reanudar = 0 WHERE id = 1"
+                sql = "UPDATE sistema_control SET emergencia = %s WHERE id = 1"
                 cursor.execute(sql, (estado,))
                 conn.commit()
                 print(f"BD actualizada: emergencia = {estado}")
