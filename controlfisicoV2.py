@@ -1,6 +1,6 @@
 import customtkinter as ctk
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import messagebox, ttk, simpledialog
 from PIL import Image
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
@@ -12,6 +12,7 @@ import os
 from datetime import datetime
 from zoneinfo import ZoneInfo
 import pymysql
+import bcrypt
 from dotenv import load_dotenv
 
 TZ_TIJUANA = ZoneInfo("America/Tijuana")
@@ -32,6 +33,14 @@ if not all([DB_HOST, DB_USER, DB_PASSWORD, DB_NAME]):
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
+
+
+def verificar_password(pwd_ingresada, pwd_guardada):
+    """Verifica con bcrypt; si la columna aún no está migrada (texto plano), compara directo."""
+    try:
+        return bcrypt.checkpw(pwd_ingresada.encode("utf-8"), pwd_guardada.encode("utf-8"))
+    except (ValueError, AttributeError):
+        return pwd_ingresada == pwd_guardada
 
 
 def conectar_db():
@@ -129,8 +138,168 @@ class LoginApp(ctk.CTk):
         if self.clave_entry.get() == CLAVE_MAESTRA:
             self.admin_frame.pack(fill="both", expand=True)
             messagebox.showinfo("Acceso", "Administración activada")
+            self.listar_usuarios()
         else:
             messagebox.showerror("Error", "Clave incorrecta")
+
+    def listar_usuarios(self):
+        # Limpiar contenido previo del frame
+        for widget in self.admin_frame.winfo_children():
+            widget.destroy()
+
+        conn = conectar_db()
+        if not conn:
+            ctk.CTkLabel(self.admin_frame, text="No se pudo conectar a la base de datos").pack(pady=10)
+            return
+
+        try:
+            cursor = conn.cursor(pymysql.cursors.DictCursor)
+            cursor.execute("SELECT id, username FROM usuarios ORDER BY username")
+            usuarios = cursor.fetchall()
+        except Exception as e:
+            ctk.CTkLabel(self.admin_frame, text=f"Error al consultar usuarios: {e}").pack(pady=10)
+            return
+        finally:
+            conn.close()
+
+        # --- Tabla de usuarios ---
+        tree = ttk.Treeview(self.admin_frame, columns=("id", "username"), show="headings", height=10)
+        tree.heading("id", text="ID")
+        tree.heading("username", text="Usuario")
+        tree.column("id", width=60, anchor="center")
+        tree.column("username", width=250, anchor="w")
+        tree.pack(fill="both", expand=True, padx=10, pady=(10, 5))
+
+        for u in usuarios:
+            tree.insert("", "end", values=(u["id"], u["username"]))
+
+        self.tree_usuarios = tree
+
+        # --- Botonera de acciones ---
+        botonera = ctk.CTkFrame(self.admin_frame, fg_color="transparent")
+        botonera.pack(fill="x", padx=10, pady=(0, 10))
+
+        ctk.CTkButton(
+            botonera, text="Agregar usuario", command=self.agregar_usuario
+        ).pack(side="left", padx=5)
+
+        ctk.CTkButton(
+            botonera, text="Cambiar contraseña", command=self.cambiar_password_usuario
+        ).pack(side="left", padx=5)
+
+        ctk.CTkButton(
+            botonera, text="Eliminar usuario", fg_color="#b02a2a", hover_color="#8c2121",
+            command=self.eliminar_usuario
+        ).pack(side="left", padx=5)
+
+        ctk.CTkButton(
+            botonera, text="Refrescar", command=self.listar_usuarios
+        ).pack(side="left", padx=5)
+
+    def _usuario_seleccionado(self):
+        """Devuelve (id, username) del usuario seleccionado en el Treeview, o None si no hay selección."""
+        seleccion = self.tree_usuarios.selection()
+        if not seleccion:
+            messagebox.showwarning("Aviso", "Selecciona un usuario de la lista primero.")
+            return None
+        valores = self.tree_usuarios.item(seleccion[0], "values")
+        return int(valores[0]), valores[1]
+
+    def agregar_usuario(self):
+        nuevo_user = simpledialog.askstring("Agregar usuario", "Nombre de usuario:", parent=self)
+        if not nuevo_user or not nuevo_user.strip():
+            return
+        nuevo_user = nuevo_user.strip()
+
+        nueva_pwd = simpledialog.askstring(
+            "Agregar usuario", f"Contraseña para '{nuevo_user}':", parent=self, show="*"
+        )
+        if not nueva_pwd:
+            return
+
+        conn = conectar_db()
+        if not conn:
+            messagebox.showerror("Error", "No se pudo conectar a la base de datos")
+            return
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT id FROM usuarios WHERE username=%s", (nuevo_user,))
+            if cursor.fetchone():
+                messagebox.showerror("Error", "Ese nombre de usuario ya existe")
+                return
+            hash_pwd = bcrypt.hashpw(nueva_pwd.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+            cursor.execute(
+                "INSERT INTO usuarios (username, password) VALUES (%s, %s)", (nuevo_user, hash_pwd)
+            )
+            conn.commit()
+            messagebox.showinfo("Éxito", f"Usuario '{nuevo_user}' creado correctamente")
+        except Exception as e:
+            messagebox.showerror("Error", f"No se pudo crear el usuario: {e}")
+        finally:
+            conn.close()
+
+        self.listar_usuarios()
+
+    def cambiar_password_usuario(self):
+        seleccionado = self._usuario_seleccionado()
+        if not seleccionado:
+            return
+        user_id, username = seleccionado
+
+        nueva_pwd = simpledialog.askstring(
+            "Cambiar contraseña", f"Nueva contraseña para '{username}':", parent=self, show="*"
+        )
+        if not nueva_pwd:
+            return
+        confirmar_pwd = simpledialog.askstring(
+            "Cambiar contraseña", "Confirma la nueva contraseña:", parent=self, show="*"
+        )
+        if nueva_pwd != confirmar_pwd:
+            messagebox.showerror("Error", "Las contraseñas no coinciden")
+            return
+
+        conn = conectar_db()
+        if not conn:
+            messagebox.showerror("Error", "No se pudo conectar a la base de datos")
+            return
+        try:
+            cursor = conn.cursor()
+            hash_pwd = bcrypt.hashpw(nueva_pwd.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+            cursor.execute("UPDATE usuarios SET password=%s WHERE id=%s", (hash_pwd, user_id))
+            conn.commit()
+            messagebox.showinfo("Éxito", f"Contraseña de '{username}' actualizada")
+        except Exception as e:
+            messagebox.showerror("Error", f"No se pudo actualizar la contraseña: {e}")
+        finally:
+            conn.close()
+
+    def eliminar_usuario(self):
+        seleccionado = self._usuario_seleccionado()
+        if not seleccionado:
+            return
+        user_id, username = seleccionado
+
+        if not messagebox.askyesno(
+            "Confirmar eliminación",
+            f"¿Seguro que quieres eliminar al usuario '{username}'? Esta acción no se puede deshacer."
+        ):
+            return
+
+        conn = conectar_db()
+        if not conn:
+            messagebox.showerror("Error", "No se pudo conectar a la base de datos")
+            return
+        try:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM usuarios WHERE id=%s", (user_id,))
+            conn.commit()
+            messagebox.showinfo("Éxito", f"Usuario '{username}' eliminado")
+        except Exception as e:
+            messagebox.showerror("Error", f"No se pudo eliminar el usuario: {e}")
+        finally:
+            conn.close()
+
+        self.listar_usuarios()
 
     def verificar_login(self):
         user = self.username_entry.get().strip()
@@ -152,15 +321,15 @@ class LoginApp(ctk.CTk):
                 try:
                     cursor = conn.cursor(pymysql.cursors.DictCursor)
                     print("Conexión DB OK, ejecutando query...")
-                    cursor.execute("SELECT * FROM usuarios WHERE username=%s AND password=%s", (user, pwd))
+                    cursor.execute("SELECT * FROM usuarios WHERE username=%s", (user,))
                     result = cursor.fetchone()
                     print("Resultado de la query:", result)
-                    if result:
+                    if result and verificar_password(pwd, result['password']):
                         print("Usuario encontrado en DB → abriendo Dashboard")
                         self.usuario_id = result['id']
                         acceso_concedido = True
                     else:
-                        messagebox.showerror("Error", "Credenciales incorrectas (no encontrado en DB)")
+                        messagebox.showerror("Error", "Credenciales incorrectas")
                 except Exception as e:
                     messagebox.showerror("Error DB", f"Error en consulta: {e}")
                 finally:
