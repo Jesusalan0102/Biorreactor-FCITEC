@@ -1,6 +1,6 @@
 import customtkinter as ctk
 import tkinter as tk
-from tkinter import messagebox, ttk, simpledialog
+from tkinter import ttk
 from PIL import Image
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
@@ -19,20 +19,221 @@ TZ_TIJUANA = ZoneInfo("America/Tijuana")
 
 load_dotenv()
 
-# Configuración base de datos (Clever Cloud)
-DB_HOST = 'bfn0iql8vbpvwgbmq9zk-mysql.services.clever-cloud.com'
-DB_USER = 'unluguvpazazzigt'
-DB_PASSWORD = '63OBli4DqSLiqrR6yE25'
-DB_NAME = 'bfn0iql8vbpvwgbmq9zk'
-DB_PORT = 3306
-CLAVE_MAESTRA = '1270345'
+# Configuración base de datos (Clever Cloud) - se cargan desde variables de
+# entorno / archivo .env, NUNCA hardcodeadas en el código fuente.
+DB_HOST = os.environ.get("DB_HOST", "")
+DB_USER = os.environ.get("DB_USER", "")
+DB_PASSWORD = os.environ.get("DB_PASSWORD", "")
+DB_NAME = os.environ.get("DB_NAME", "")
+DB_PORT = int(os.environ.get("DB_PORT", "3306"))
+CLAVE_MAESTRA = os.environ.get("CLAVE_MAESTRA", "")
 
-if not all([DB_HOST, DB_USER, DB_PASSWORD, DB_NAME]):
-    print("[ADVERTENCIA] Faltan variables de entorno de base de datos. "
+if not all([DB_HOST, DB_USER, DB_PASSWORD, DB_NAME, CLAVE_MAESTRA]):
+    print("[ADVERTENCIA] Faltan variables de entorno de base de datos o CLAVE_MAESTRA. "
           "Crea un archivo .env junto a este script (ver .env.example).")
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
+
+# --- Paleta unificada con el SCADA web (misma identidad visual) ---
+COLOR_FONDO = "#0d1b2a"
+COLOR_FONDO_GRAD = "#142d5a"
+COLOR_PANEL = "#0f3460"
+COLOR_TARJETA = "#16233a"
+COLOR_AZUL = "#1A73E8"
+COLOR_AZUL_HOVER = "#1557B0"
+COLOR_AZUL_OSCURO = "#0D47A1"
+COLOR_VERDE = "#2ECC71"
+COLOR_VERDE_HOVER = "#27ae60"
+COLOR_ROJO = "#E74C3C"
+COLOR_ROJO_HOVER = "#c0392b"
+COLOR_AMARILLO = "#F4B400"
+COLOR_TEXTO = "#EAF2FB"
+COLOR_TEXTO_SUAVE = "#9fc0e8"
+FUENTE = "Segoe UI"
+
+
+class ModalBase(ctk.CTkToplevel):
+    """Base para reemplazar messagebox/simpledialog con algo que combine
+    con el resto de la app (tarjeta oscura redondeada, sin chrome de Windows)."""
+    def __init__(self, parent, titulo):
+        super().__init__(parent)
+        self.title("")
+        self.configure(fg_color=COLOR_FONDO)
+        self.overrideredirect(True)  # sin barra de título nativa de Windows
+        self.attributes("-topmost", True)
+        self.resizable(False, False)
+        self.result = None
+
+        self.card = ctk.CTkFrame(self, fg_color=COLOR_TARJETA, corner_radius=20,
+                                  border_width=2, border_color=COLOR_AZUL)
+        self.card.pack(padx=2, pady=2, fill="both", expand=True)
+
+        ctk.CTkLabel(self.card, text=titulo, font=(FUENTE, 17, "bold"),
+                     text_color=COLOR_TEXTO).pack(pady=(22, 4), padx=30)
+
+        self.bind("<Escape>", lambda e: self._cerrar())
+
+    def _centrar(self, ancho=380, alto=220):
+        self.update_idletasks()
+        parent = self.master
+        px, py = parent.winfo_rootx(), parent.winfo_rooty()
+        pw, ph = parent.winfo_width(), parent.winfo_height()
+        x = px + (pw - ancho) // 2
+        y = py + (ph - alto) // 2
+        self.geometry(f"{ancho}x{alto}+{x}+{y}")
+
+    def _cerrar(self):
+        self.grab_release()
+        self.destroy()
+
+
+class ModalMensaje(ModalBase):
+    """Reemplaza messagebox.showinfo / showerror / showwarning."""
+    COLORES = {"info": COLOR_AZUL, "exito": COLOR_VERDE, "error": COLOR_ROJO, "aviso": COLOR_AMARILLO}
+    ICONOS = {"info": "ℹ", "exito": "✓", "error": "✕", "aviso": "⚠"}
+
+    def __init__(self, parent, titulo, mensaje, tipo="info"):
+        super().__init__(parent, "")
+        color = self.COLORES.get(tipo, COLOR_AZUL)
+        self.card.configure(border_color=color)
+
+        ctk.CTkLabel(self.card, text=self.ICONOS.get(tipo, "ℹ"), font=(FUENTE, 30, "bold"),
+                     text_color=color).pack(pady=(18, 0))
+        ctk.CTkLabel(self.card, text=titulo, font=(FUENTE, 16, "bold"),
+                     text_color=COLOR_TEXTO).pack(pady=(6, 4), padx=30)
+        ctk.CTkLabel(self.card, text=mensaje, font=(FUENTE, 13), text_color=COLOR_TEXTO_SUAVE,
+                     wraplength=320, justify="center").pack(pady=(0, 18), padx=30)
+        ctk.CTkButton(self.card, text="Aceptar", fg_color=color, hover_color=color,
+                      corner_radius=12, width=140, command=self._cerrar).pack(pady=(0, 22))
+
+        self._centrar(380, 240)
+        self.grab_set()
+        self.wait_window()
+
+
+class ModalConfirmar(ModalBase):
+    """Reemplaza messagebox.askyesno."""
+    def __init__(self, parent, titulo, mensaje):
+        super().__init__(parent, "")
+        self.card.configure(border_color=COLOR_ROJO)
+
+        ctk.CTkLabel(self.card, text="⚠", font=(FUENTE, 30, "bold"),
+                     text_color=COLOR_ROJO).pack(pady=(18, 0))
+        ctk.CTkLabel(self.card, text=titulo, font=(FUENTE, 16, "bold"),
+                     text_color=COLOR_TEXTO).pack(pady=(6, 4), padx=30)
+        ctk.CTkLabel(self.card, text=mensaje, font=(FUENTE, 13), text_color=COLOR_TEXTO_SUAVE,
+                     wraplength=320, justify="center").pack(pady=(0, 18), padx=30)
+
+        botones = ctk.CTkFrame(self.card, fg_color="transparent")
+        botones.pack(pady=(0, 22))
+        ctk.CTkButton(botones, text="Cancelar", fg_color=COLOR_PANEL, hover_color="#1c3a66",
+                      corner_radius=12, width=110, command=self._no).pack(side="left", padx=8)
+        ctk.CTkButton(botones, text="Confirmar", fg_color=COLOR_ROJO, hover_color=COLOR_ROJO_HOVER,
+                      corner_radius=12, width=110, command=self._si).pack(side="left", padx=8)
+
+        self._centrar(380, 260)
+        self.grab_set()
+        self.wait_window()
+
+    def _si(self):
+        self.result = True
+        self._cerrar()
+
+    def _no(self):
+        self.result = False
+        self._cerrar()
+
+
+class ModalTexto(ModalBase):
+    """Reemplaza simpledialog.askstring."""
+    def __init__(self, parent, titulo, mensaje, show=None):
+        super().__init__(parent, "")
+        self.card.configure(border_color=COLOR_AZUL)
+
+        ctk.CTkLabel(self.card, text=titulo, font=(FUENTE, 16, "bold"),
+                     text_color=COLOR_TEXTO).pack(pady=(20, 4), padx=30)
+        ctk.CTkLabel(self.card, text=mensaje, font=(FUENTE, 12), text_color=COLOR_TEXTO_SUAVE,
+                     wraplength=320, justify="center").pack(pady=(0, 10), padx=30)
+
+        self.entry = ctk.CTkEntry(self.card, width=280, height=42, corner_radius=12,
+                                   fg_color=COLOR_FONDO, border_color=COLOR_AZUL,
+                                   font=(FUENTE, 14), show=show or "")
+        self.entry.pack(pady=(0, 18))
+        self.entry.bind("<Return>", lambda e: self._ok())
+
+        botones = ctk.CTkFrame(self.card, fg_color="transparent")
+        botones.pack(pady=(0, 22))
+        ctk.CTkButton(botones, text="Cancelar", fg_color=COLOR_PANEL, hover_color="#1c3a66",
+                      corner_radius=12, width=110, command=self._cancelar).pack(side="left", padx=8)
+        ctk.CTkButton(botones, text="Aceptar", fg_color=COLOR_AZUL, hover_color=COLOR_AZUL_HOVER,
+                      corner_radius=12, width=110, command=self._ok).pack(side="left", padx=8)
+
+        self._centrar(380, 280)
+        self.entry.focus()
+        self.grab_set()
+        self.wait_window()
+
+    def _ok(self):
+        self.result = self.entry.get()
+        self._cerrar()
+
+    def _cancelar(self):
+        self.result = None
+        self._cerrar()
+
+
+def mostrar_info(parent, titulo, mensaje):
+    ModalMensaje(parent, titulo, mensaje, tipo="info")
+
+
+def mostrar_exito(parent, titulo, mensaje):
+    ModalMensaje(parent, titulo, mensaje, tipo="exito")
+
+
+def mostrar_error(parent, titulo, mensaje):
+    ModalMensaje(parent, titulo, mensaje, tipo="error")
+
+
+def mostrar_aviso(parent, titulo, mensaje):
+    ModalMensaje(parent, titulo, mensaje, tipo="aviso")
+
+
+def confirmar(parent, titulo, mensaje):
+    return bool(ModalConfirmar(parent, titulo, mensaje).result)
+
+
+def pedir_texto(parent, titulo, mensaje, show=None):
+    return ModalTexto(parent, titulo, mensaje, show=show).result
+
+
+def estilizar_treeview_oscuro():
+    """ttk.Treeview no sigue el tema de CustomTkinter por defecto y se ve
+    con estilo Windows clásico; lo forzamos a la paleta oscura del SCADA."""
+    estilo = ttk.Style()
+    estilo.theme_use("clam")
+    estilo.configure(
+        "Oscuro.Treeview",
+        background=COLOR_TARJETA,
+        fieldbackground=COLOR_TARJETA,
+        foreground=COLOR_TEXTO,
+        rowheight=32,
+        borderwidth=0,
+        font=(FUENTE, 12),
+    )
+    estilo.configure(
+        "Oscuro.Treeview.Heading",
+        background=COLOR_PANEL,
+        foreground=COLOR_TEXTO_SUAVE,
+        borderwidth=0,
+        font=(FUENTE, 12, "bold"),
+    )
+    estilo.map(
+        "Oscuro.Treeview",
+        background=[("selected", COLOR_AZUL)],
+        foreground=[("selected", "white")],
+    )
+    estilo.layout("Oscuro.Treeview", [("Oscuro.Treeview.treearea", {"sticky": "nswe"})])
 
 
 def verificar_password(pwd_ingresada, pwd_guardada):
@@ -91,65 +292,140 @@ def asegurar_tabla_calibracion():
 class LoginApp(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("Login - Control Bioreactor")
+        self.title("Control Bioreactor")
+        self.configure(fg_color=COLOR_FONDO)
         self.update_idletasks()
         w = self.winfo_screenwidth()
         h = self.winfo_screenheight()
         self.geometry(f"{w}x{h}+0+0")
 
+        estilizar_treeview_oscuro()
+
+        # Fondo con gradiente simulado (canvas), igual que el login web
+        self.fondo = tk.Canvas(self, highlightthickness=0, bd=0)
+        self.fondo.place(x=0, y=0, relwidth=1, relheight=1)
+        self._pintar_gradiente()
+        self.bind("<Configure>", lambda e: self._pintar_gradiente())
+
+        # --- Tarjeta central ---
+        self.tarjeta = ctk.CTkFrame(self, fg_color=COLOR_TARJETA, corner_radius=28,
+                                     border_width=2, border_color=COLOR_AZUL, width=460)
+        self.tarjeta.place(relx=0.5, rely=0.5, anchor="center")
+
         try:
             logo_pil = Image.open("logo.png")
-            logo_pil = logo_pil.resize((500, 300))
-            self.logo = ctk.CTkImage(light_image=logo_pil, dark_image=logo_pil, size=(500, 300))
+            logo_pil = logo_pil.resize((260, 150))
+            self.logo = ctk.CTkImage(light_image=logo_pil, dark_image=logo_pil, size=(260, 150))
+            ctk.CTkLabel(self.tarjeta, image=self.logo, text="").pack(pady=(28, 4))
         except Exception as e:
             print(f"No se pudo cargar logo: {e}")
-            self.logo = None
+            ctk.CTkLabel(self.tarjeta, text="🧪 BIOREACTOR", font=(FUENTE, 26, "bold"),
+                         text_color=COLOR_AZUL).pack(pady=(36, 4))
 
-        if self.logo:
-            ctk.CTkLabel(self, image=self.logo, text="").pack(pady=20)
+        ctk.CTkLabel(self.tarjeta, text="CONTROL FÍSICO", font=(FUENTE, 22, "bold"),
+                     text_color=COLOR_TEXTO).pack(pady=(0, 22))
 
-        tabview = ctk.CTkTabview(self)
-        tabview.pack(expand=True, fill="both", padx=20, pady=20)
+        tabview = ctk.CTkTabview(
+            self.tarjeta, width=380, height=300, corner_radius=18,
+            fg_color=COLOR_FONDO, segmented_button_fg_color=COLOR_PANEL,
+            segmented_button_selected_color=COLOR_AZUL,
+            segmented_button_selected_hover_color=COLOR_AZUL_HOVER,
+            segmented_button_unselected_color=COLOR_PANEL,
+            text_color=COLOR_TEXTO,
+        )
+        tabview.pack(padx=30, pady=(0, 30))
 
         tab_login = tabview.add("Iniciar Sesión")
-        tab_admin = tabview.add("Administrar Usuarios")
+        tab_admin = tabview.add("Administrar")
 
-        ctk.CTkLabel(tab_login, text="Usuario", font=("Arial", 14)).pack(pady=10)
-        self.username_entry = ctk.CTkEntry(tab_login, width=300)
-        self.username_entry.pack(pady=5)
+        # --- Tab login ---
+        ctk.CTkLabel(tab_login, text="USUARIO", font=(FUENTE, 11, "bold"),
+                     text_color=COLOR_TEXTO_SUAVE, anchor="w").pack(fill="x", padx=6, pady=(18, 2))
+        self.username_entry = ctk.CTkEntry(tab_login, width=320, height=42, corner_radius=12,
+                                            fg_color=COLOR_TARJETA, border_color=COLOR_AZUL,
+                                            font=(FUENTE, 14))
+        self.username_entry.pack(padx=6)
 
-        ctk.CTkLabel(tab_login, text="Contraseña", font=("Arial", 14)).pack(pady=10)
-        self.password_entry = ctk.CTkEntry(tab_login, width=300, show="*")
-        self.password_entry.pack(pady=5)
+        ctk.CTkLabel(tab_login, text="CONTRASEÑA", font=(FUENTE, 11, "bold"),
+                     text_color=COLOR_TEXTO_SUAVE, anchor="w").pack(fill="x", padx=6, pady=(16, 2))
+        self.password_entry = ctk.CTkEntry(tab_login, width=320, height=42, corner_radius=12,
+                                            fg_color=COLOR_TARJETA, border_color=COLOR_AZUL,
+                                            font=(FUENTE, 14), show="•")
+        self.password_entry.pack(padx=6)
+        self.password_entry.bind("<Return>", lambda e: self.verificar_login())
 
-        ctk.CTkButton(tab_login, text="Iniciar Sesión", command=self.verificar_login).pack(pady=30)
+        ctk.CTkButton(tab_login, text="INICIAR SESIÓN", height=46, corner_radius=14,
+                      fg_color=COLOR_AZUL, hover_color=COLOR_AZUL_HOVER,
+                      font=(FUENTE, 14, "bold"), command=self.verificar_login).pack(pady=28, padx=6, fill="x")
 
-        ctk.CTkLabel(tab_admin, text="Clave Maestra", font=("Arial", 14)).pack(pady=10)
-        self.clave_entry = ctk.CTkEntry(tab_admin, width=300, show="*")
-        self.clave_entry.pack(pady=5)
+        # --- Tab admin ---
+        ctk.CTkLabel(tab_admin, text="CLAVE MAESTRA", font=(FUENTE, 11, "bold"),
+                     text_color=COLOR_TEXTO_SUAVE, anchor="w").pack(fill="x", padx=6, pady=(18, 2))
+        self.clave_entry = ctk.CTkEntry(tab_admin, width=320, height=42, corner_radius=12,
+                                         fg_color=COLOR_TARJETA, border_color=COLOR_AZUL,
+                                         font=(FUENTE, 14), show="•")
+        self.clave_entry.pack(padx=6)
+        self.clave_entry.bind("<Return>", lambda e: self.activar_admin())
 
-        ctk.CTkButton(tab_admin, text="Activar Administración", command=self.activar_admin).pack(pady=20)
+        ctk.CTkButton(tab_admin, text="ACTIVAR ADMINISTRACIÓN", height=46, corner_radius=14,
+                      fg_color=COLOR_PANEL, hover_color="#1c3a66",
+                      font=(FUENTE, 14, "bold"), command=self.activar_admin).pack(pady=28, padx=6, fill="x")
 
-        self.admin_frame = ctk.CTkFrame(tab_admin)
-        self.admin_frame.pack(fill="both", expand=True)
-        self.admin_frame.pack_forget()
+        # --- Panel de administración (fuera del tabview, pantalla completa cuando se activa) ---
+        self.admin_frame = ctk.CTkFrame(self, fg_color=COLOR_TARJETA, corner_radius=24,
+                                         border_width=2, border_color=COLOR_AZUL)
+
+    def _pintar_gradiente(self):
+        """Dibuja un degradado vertical azul-oscuro → azul-noche, igual al fondo web."""
+        self.fondo.delete("grad")
+        alto = max(self.winfo_height(), 1)
+        ancho = max(self.winfo_width(), 1)
+        pasos = 60
+        c1 = (0x0a, 0x14, 0x20)
+        c2 = (0x14, 0x2d, 0x5a)
+        for i in range(pasos):
+            t = i / pasos
+            r = int(c1[0] + (c2[0] - c1[0]) * t)
+            g = int(c1[1] + (c2[1] - c1[1]) * t)
+            b = int(c1[2] + (c2[2] - c1[2]) * t)
+            color = f"#{r:02x}{g:02x}{b:02x}"
+            y0 = int(alto * i / pasos)
+            y1 = int(alto * (i + 1) / pasos)
+            self.fondo.create_rectangle(0, y0, ancho, y1, fill=color, outline=color, tags="grad")
+        self.fondo.tag_lower("grad")
 
     def activar_admin(self):
         if self.clave_entry.get() == CLAVE_MAESTRA:
-            self.admin_frame.pack(fill="both", expand=True)
-            messagebox.showinfo("Acceso", "Administración activada")
+            self.tarjeta.place_forget()
+            self.admin_frame.place(relx=0.5, rely=0.5, anchor="center",
+                                    relwidth=0.7, relheight=0.8)
             self.listar_usuarios()
         else:
-            messagebox.showerror("Error", "Clave incorrecta")
+            mostrar_error(self, "Acceso denegado", "Clave maestra incorrecta")
+
+    def cerrar_admin(self):
+        self.admin_frame.place_forget()
+        self.clave_entry.delete(0, "end")
+        self.tarjeta.place(relx=0.5, rely=0.5, anchor="center")
 
     def listar_usuarios(self):
         # Limpiar contenido previo del frame
         for widget in self.admin_frame.winfo_children():
             widget.destroy()
 
+        # --- Encabezado con título y botón de cerrar ---
+        encabezado = ctk.CTkFrame(self.admin_frame, fg_color="transparent")
+        encabezado.pack(fill="x", padx=24, pady=(20, 10))
+        ctk.CTkLabel(encabezado, text="ADMINISTRAR USUARIOS", font=(FUENTE, 18, "bold"),
+                     text_color=COLOR_TEXTO).pack(side="left")
+        ctk.CTkButton(encabezado, text="✕ Cerrar", width=90, height=32, corner_radius=10,
+                      fg_color=COLOR_PANEL, hover_color="#1c3a66",
+                      command=self.cerrar_admin).pack(side="right")
+
         conn = conectar_db()
         if not conn:
-            ctk.CTkLabel(self.admin_frame, text="No se pudo conectar a la base de datos").pack(pady=10)
+            ctk.CTkLabel(self.admin_frame, text="No se pudo conectar a la base de datos",
+                         text_color=COLOR_ROJO).pack(pady=10)
             return
 
         try:
@@ -157,18 +433,23 @@ class LoginApp(ctk.CTk):
             cursor.execute("SELECT id, username FROM usuarios ORDER BY username")
             usuarios = cursor.fetchall()
         except Exception as e:
-            ctk.CTkLabel(self.admin_frame, text=f"Error al consultar usuarios: {e}").pack(pady=10)
+            ctk.CTkLabel(self.admin_frame, text=f"Error al consultar usuarios: {e}",
+                         text_color=COLOR_ROJO).pack(pady=10)
             return
         finally:
             conn.close()
 
-        # --- Tabla de usuarios ---
-        tree = ttk.Treeview(self.admin_frame, columns=("id", "username"), show="headings", height=10)
+        # --- Tabla de usuarios (estilo oscuro) ---
+        contenedor_tabla = ctk.CTkFrame(self.admin_frame, fg_color=COLOR_FONDO, corner_radius=14)
+        contenedor_tabla.pack(fill="both", expand=True, padx=24, pady=(0, 12))
+
+        tree = ttk.Treeview(contenedor_tabla, columns=("id", "username"), show="headings",
+                             height=10, style="Oscuro.Treeview")
         tree.heading("id", text="ID")
-        tree.heading("username", text="Usuario")
-        tree.column("id", width=60, anchor="center")
-        tree.column("username", width=250, anchor="w")
-        tree.pack(fill="both", expand=True, padx=10, pady=(10, 5))
+        tree.heading("username", text="USUARIO")
+        tree.column("id", width=70, anchor="center")
+        tree.column("username", width=280, anchor="w")
+        tree.pack(fill="both", expand=True, padx=10, pady=10)
 
         for u in usuarios:
             tree.insert("", "end", values=(u["id"], u["username"]))
@@ -177,64 +458,69 @@ class LoginApp(ctk.CTk):
 
         # --- Botonera de acciones ---
         botonera = ctk.CTkFrame(self.admin_frame, fg_color="transparent")
-        botonera.pack(fill="x", padx=10, pady=(0, 10))
+        botonera.pack(fill="x", padx=24, pady=(0, 22))
 
         ctk.CTkButton(
-            botonera, text="Agregar usuario", command=self.agregar_usuario
-        ).pack(side="left", padx=5)
+            botonera, text="＋  Agregar usuario", height=40, corner_radius=12,
+            fg_color=COLOR_VERDE, hover_color=COLOR_VERDE_HOVER, font=(FUENTE, 13, "bold"),
+            command=self.agregar_usuario
+        ).pack(side="left", padx=(0, 8))
 
         ctk.CTkButton(
-            botonera, text="Cambiar contraseña", command=self.cambiar_password_usuario
-        ).pack(side="left", padx=5)
+            botonera, text="🔑  Cambiar contraseña", height=40, corner_radius=12,
+            fg_color=COLOR_AZUL, hover_color=COLOR_AZUL_HOVER, font=(FUENTE, 13, "bold"),
+            command=self.cambiar_password_usuario
+        ).pack(side="left", padx=8)
 
         ctk.CTkButton(
-            botonera, text="Eliminar usuario", fg_color="#b02a2a", hover_color="#8c2121",
+            botonera, text="🗑  Eliminar usuario", height=40, corner_radius=12,
+            fg_color=COLOR_ROJO, hover_color=COLOR_ROJO_HOVER, font=(FUENTE, 13, "bold"),
             command=self.eliminar_usuario
-        ).pack(side="left", padx=5)
+        ).pack(side="left", padx=8)
 
         ctk.CTkButton(
-            botonera, text="Refrescar", command=self.listar_usuarios
-        ).pack(side="left", padx=5)
+            botonera, text="↻  Refrescar", height=40, corner_radius=12,
+            fg_color=COLOR_PANEL, hover_color="#1c3a66", font=(FUENTE, 13, "bold"),
+            command=self.listar_usuarios
+        ).pack(side="left", padx=8)
 
     def _usuario_seleccionado(self):
         """Devuelve (id, username) del usuario seleccionado en el Treeview, o None si no hay selección."""
         seleccion = self.tree_usuarios.selection()
         if not seleccion:
-            messagebox.showwarning("Aviso", "Selecciona un usuario de la lista primero.")
+            mostrar_aviso(self, "Aviso", "Selecciona un usuario de la lista primero.")
             return None
         valores = self.tree_usuarios.item(seleccion[0], "values")
         return int(valores[0]), valores[1]
 
     def agregar_usuario(self):
-        nuevo_user = simpledialog.askstring("Agregar usuario", "Nombre de usuario:", parent=self)
+        nuevo_user = pedir_texto(self, "Agregar usuario", "Nombre de usuario:")
         if not nuevo_user or not nuevo_user.strip():
             return
         nuevo_user = nuevo_user.strip()
 
-        nueva_pwd = simpledialog.askstring(
-            "Agregar usuario", f"Contraseña para '{nuevo_user}':", parent=self, show="*"
-        )
+        nueva_pwd = pedir_texto(self, "Agregar usuario", f"Contraseña para '{nuevo_user}':", show="•")
         if not nueva_pwd:
             return
 
         conn = conectar_db()
         if not conn:
-            messagebox.showerror("Error", "No se pudo conectar a la base de datos")
+            mostrar_error(self, "Error", "No se pudo conectar a la base de datos")
             return
         try:
             cursor = conn.cursor()
             cursor.execute("SELECT id FROM usuarios WHERE username=%s", (nuevo_user,))
             if cursor.fetchone():
-                messagebox.showerror("Error", "Ese nombre de usuario ya existe")
+                mostrar_error(self, "Error", "Ese nombre de usuario ya existe")
                 return
             hash_pwd = bcrypt.hashpw(nueva_pwd.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
             cursor.execute(
                 "INSERT INTO usuarios (username, password) VALUES (%s, %s)", (nuevo_user, hash_pwd)
             )
             conn.commit()
-            messagebox.showinfo("Éxito", f"Usuario '{nuevo_user}' creado correctamente")
+            mostrar_exito(self, "Éxito", f"Usuario '{nuevo_user}' creado correctamente")
         except Exception as e:
-            messagebox.showerror("Error", f"No se pudo crear el usuario: {e}")
+            mostrar_error(self, "Error", f"No se pudo crear el usuario: {e}")
         finally:
             conn.close()
 
@@ -246,30 +532,26 @@ class LoginApp(ctk.CTk):
             return
         user_id, username = seleccionado
 
-        nueva_pwd = simpledialog.askstring(
-            "Cambiar contraseña", f"Nueva contraseña para '{username}':", parent=self, show="*"
-        )
+        nueva_pwd = pedir_texto(self, "Cambiar contraseña", f"Nueva contraseña para '{username}':", show="•")
         if not nueva_pwd:
             return
-        confirmar_pwd = simpledialog.askstring(
-            "Cambiar contraseña", "Confirma la nueva contraseña:", parent=self, show="*"
-        )
+        confirmar_pwd = pedir_texto(self, "Cambiar contraseña", "Confirma la nueva contraseña:", show="•")
         if nueva_pwd != confirmar_pwd:
-            messagebox.showerror("Error", "Las contraseñas no coinciden")
+            mostrar_error(self, "Error", "Las contraseñas no coinciden")
             return
 
         conn = conectar_db()
         if not conn:
-            messagebox.showerror("Error", "No se pudo conectar a la base de datos")
+            mostrar_error(self, "Error", "No se pudo conectar a la base de datos")
             return
         try:
             cursor = conn.cursor()
             hash_pwd = bcrypt.hashpw(nueva_pwd.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
             cursor.execute("UPDATE usuarios SET password=%s WHERE id=%s", (hash_pwd, user_id))
             conn.commit()
-            messagebox.showinfo("Éxito", f"Contraseña de '{username}' actualizada")
+            mostrar_exito(self, "Éxito", f"Contraseña de '{username}' actualizada")
         except Exception as e:
-            messagebox.showerror("Error", f"No se pudo actualizar la contraseña: {e}")
+            mostrar_error(self, "Error", f"No se pudo actualizar la contraseña: {e}")
         finally:
             conn.close()
 
@@ -279,23 +561,23 @@ class LoginApp(ctk.CTk):
             return
         user_id, username = seleccionado
 
-        if not messagebox.askyesno(
-            "Confirmar eliminación",
+        if not confirmar(
+            self, "Confirmar eliminación",
             f"¿Seguro que quieres eliminar al usuario '{username}'? Esta acción no se puede deshacer."
         ):
             return
 
         conn = conectar_db()
         if not conn:
-            messagebox.showerror("Error", "No se pudo conectar a la base de datos")
+            mostrar_error(self, "Error", "No se pudo conectar a la base de datos")
             return
         try:
             cursor = conn.cursor()
             cursor.execute("DELETE FROM usuarios WHERE id=%s", (user_id,))
             conn.commit()
-            messagebox.showinfo("Éxito", f"Usuario '{username}' eliminado")
+            mostrar_exito(self, "Éxito", f"Usuario '{username}' eliminado")
         except Exception as e:
-            messagebox.showerror("Error", f"No se pudo eliminar el usuario: {e}")
+            mostrar_error(self, "Error", f"No se pudo eliminar el usuario: {e}")
         finally:
             conn.close()
 
@@ -329,13 +611,13 @@ class LoginApp(ctk.CTk):
                         self.usuario_id = result['id']
                         acceso_concedido = True
                     else:
-                        messagebox.showerror("Error", "Credenciales incorrectas")
+                        mostrar_error(self, "Error", "Credenciales incorrectas")
                 except Exception as e:
-                    messagebox.showerror("Error DB", f"Error en consulta: {e}")
+                    mostrar_error(self, "Error DB", f"Error en consulta: {e}")
                 finally:
                     conn.close()
             else:
-                messagebox.showerror("Error", "No se pudo conectar a la base de datos")
+                mostrar_error(self, "Error", "No se pudo conectar a la base de datos")
 
         if acceso_concedido:
             print("Ocultando ventana de login...")
@@ -425,17 +707,17 @@ class DashboardApp(ctk.CTk):
         leds = ctk.CTkFrame(left)
         leds.pack()
 
-        self.lbl_arranque = ctk.CTkLabel(leds, text="● Arranque", text_color="gray", font=("Arial", 13))
+        self.lbl_arranque = ctk.CTkLabel(leds, text="● Arranque", text_color="gray", font=(FUENTE, 13))
         self.lbl_arranque.pack(side="left", padx=6)
 
-        self.lbl_falla = ctk.CTkLabel(leds, text="● Falla", text_color="gray", font=("Arial", 13))
+        self.lbl_falla = ctk.CTkLabel(leds, text="● Falla", text_color="gray", font=(FUENTE, 13))
         self.lbl_falla.pack(side="left", padx=6)
 
-        self.lbl_emergencia = ctk.CTkLabel(leds, text="● Emergencia", text_color="gray", font=("Arial", 13))
+        self.lbl_emergencia = ctk.CTkLabel(leds, text="● Emergencia", text_color="gray", font=(FUENTE, 13))
         self.lbl_emergencia.pack(side="left", padx=6)
 
         self.lbl_ultimo = ctk.CTkLabel(left, text="Última lectura: ---", 
-                                       font=("Arial", 15, "bold"), text_color="#00eeff")
+                                       font=(FUENTE, 15, "bold"), text_color="#00eeff")
         self.lbl_ultimo.pack(anchor="w", pady=8)
 
         center = ctk.CTkFrame(top)
@@ -476,10 +758,10 @@ class DashboardApp(ctk.CTk):
                                             state="disabled")
         self.btn_calibracion.pack(pady=5)
 
-        self.lbl_etapa = ctk.CTkLabel(right, text="ETAPA: READY", font=("Arial", 22, "bold"), text_color="#ffeb3b")
+        self.lbl_etapa = ctk.CTkLabel(right, text="ETAPA: READY", font=(FUENTE, 22, "bold"), text_color="#ffeb3b")
         self.lbl_etapa.pack(pady=12)
 
-        self.lbl_reles = ctk.CTkLabel(top, text="Relés: --- | Bombas: ---", font=("Arial", 12))
+        self.lbl_reles = ctk.CTkLabel(top, text="Relés: --- | Bombas: ---", font=(FUENTE, 12))
         self.lbl_reles.pack(anchor="center", pady=5)
 
         graph_frame = ctk.CTkFrame(self)
@@ -510,12 +792,12 @@ class DashboardApp(ctk.CTk):
 
     def conectar(self):
         if self.serial and self.serial.is_open:
-            messagebox.showinfo("Info", "Ya está conectado")
+            mostrar_info(self, "Info", "Ya está conectado")
             return
 
         puerto = self.puerto_var.get()
         if not puerto:
-            messagebox.showwarning("Puerto", "Selecciona un puerto")
+            mostrar_aviso(self, "Puerto", "Selecciona un puerto")
             return
 
         try:
@@ -537,11 +819,11 @@ class DashboardApp(ctk.CTk):
             # Dar tiempo al Arduino a reiniciar (bootloader) antes de sincronizar calibración
             self.after(2500, self.sincronizar_calibracion_inicial)
 
-            messagebox.showinfo("Éxito", f"Conectado a {puerto}")
+            mostrar_info(self, "Éxito", f"Conectado a {puerto}")
 
         except Exception as e:
             self.lbl_falla.configure(text_color="red")
-            messagebox.showerror("Error", f"Fallo al conectar:\n{e}")
+            mostrar_error(self, "Error", f"Fallo al conectar:\n{e}")
 
     def desconectar(self):
         if self.serial and self.serial.is_open:
@@ -725,7 +1007,7 @@ class DashboardApp(ctk.CTk):
             print(f"[ERROR BD Guardado] Mensaje: {str(e)}")
             import traceback
             traceback.print_exc()
-            messagebox.showerror("Error DB", f"Error al guardar datos:\n{str(e)}")
+            mostrar_error(self, "Error DB", f"Error al guardar datos:\n{str(e)}")
         finally:
             conn.close()
 
@@ -815,7 +1097,7 @@ class DashboardApp(ctk.CTk):
         if self.etapa == "READY":
             self.etapa = "GROWING"
             self.lbl_etapa.configure(text="ETAPA: GROWING")
-            messagebox.showinfo("Cultivo", "Cultivo iniciado - agitación y aeración activadas (relés 5 y 6 ON)")
+            mostrar_info(self, "Cultivo", "Cultivo iniciado - agitación y aeración activadas (relés 5 y 6 ON)")
 
     def paro_emergencia(self):
         print("Ejecutando paro de emergencia...")
@@ -837,7 +1119,7 @@ class DashboardApp(ctk.CTk):
             print("Comandos OFF enviados al Arduino")
         self.actualizar_emergencia_bd(1)
         self.btn_reanudar.configure(state="normal")
-        messagebox.showwarning("EMERGENCIA", "Paro de emergencia activado - todos los relés OFF")
+        mostrar_aviso(self, "EMERGENCIA", "Paro de emergencia activado - todos los relés OFF")
 
     def reanudar(self):
         print("Ejecutando reanudación completa...")
@@ -871,7 +1153,7 @@ class DashboardApp(ctk.CTk):
 
         self.actualizar_emergencia_bd(0)
         self.btn_reanudar.configure(state="disabled")
-        messagebox.showinfo("Sistema", "Sistema reanudado completamente - relés reactivados")
+        mostrar_info(self, "Sistema", "Sistema reanudado completamente - relés reactivados")
 
     def actualizar_emergencia_bd(self, estado):
         conn = conectar_db()
@@ -1002,7 +1284,7 @@ class DashboardApp(ctk.CTk):
 
     def abrir_calibracion(self):
         if not (self.serial and self.serial.is_open):
-            messagebox.showwarning("Calibración", "Conecta primero el Arduino")
+            mostrar_aviso(self, "Calibración", "Conecta primero el Arduino")
             return
         if self.ventana_calibracion is not None and self.ventana_calibracion.winfo_exists():
             self.ventana_calibracion.lift()
@@ -1053,7 +1335,7 @@ class CalibracionWindow(ctk.CTkToplevel):
     # ---------- pH ----------
     def _construir_tab_ph(self):
         t = self.tab_ph
-        ctk.CTkLabel(t, text="Calibración de pH (2 puntos)", font=("Arial", 16, "bold")).pack(pady=(10, 5))
+        ctk.CTkLabel(t, text="Calibración de pH (2 puntos)", font=(FUENTE, 16, "bold")).pack(pady=(10, 5))
         ctk.CTkLabel(
             t, justify="left",
             text="1) Sumerge el sensor en el buffer del Punto 1, espera a que se estabilice\n"
@@ -1097,7 +1379,7 @@ class CalibracionWindow(ctk.CTkToplevel):
     # ---------- OD600 ----------
     def _construir_tab_od(self):
         t = self.tab_od
-        ctk.CTkLabel(t, text="Calibración de Turbidez / OD600 (2 puntos)", font=("Arial", 16, "bold")).pack(pady=(10, 5))
+        ctk.CTkLabel(t, text="Calibración de Turbidez / OD600 (2 puntos)", font=(FUENTE, 16, "bold")).pack(pady=(10, 5))
         ctk.CTkLabel(
             t, justify="left",
             text="1) Punto 1 = 'blanco': sensor en medio de cultivo SIN inóculo (OD600 = 0).\n"
@@ -1141,7 +1423,7 @@ class CalibracionWindow(ctk.CTkToplevel):
     # ---------- Temperatura ----------
     def _construir_tab_temp(self):
         t = self.tab_temp
-        ctk.CTkLabel(t, text="Calibración de Temperatura (offset)", font=("Arial", 16, "bold")).pack(pady=(10, 5))
+        ctk.CTkLabel(t, text="Calibración de Temperatura (offset)", font=(FUENTE, 16, "bold")).pack(pady=(10, 5))
         ctk.CTkLabel(
             t, justify="left",
             text="Coloca un termómetro de referencia junto al DS18B20, espera a que\n"
@@ -1223,7 +1505,7 @@ class CalibracionWindow(ctk.CTkToplevel):
 
         if not self._muestras_actuales:
             labels[(tipo, punto)].configure(text="Voltaje: SIN DATOS")
-            messagebox.showwarning("Calibración", "No se recibió respuesta del Arduino. Verifica la conexión.")
+            mostrar_aviso(self, "Calibración", "No se recibió respuesta del Arduino. Verifica la conexión.")
             return
 
         promedio = sum(self._muestras_actuales) / len(self._muestras_actuales)
@@ -1244,63 +1526,63 @@ class CalibracionWindow(ctk.CTkToplevel):
 
     def _aplicar_calibracion_ph(self):
         if self.punto_ph[1] is None or self.punto_ph[2] is None:
-            messagebox.showwarning("Calibración pH", "Lee ambos puntos antes de calcular.")
+            mostrar_aviso(self, "Calibración pH", "Lee ambos puntos antes de calcular.")
             return
         try:
             y1 = float(self.entry_ph1.get())
             y2 = float(self.entry_ph2.get())
         except ValueError:
-            messagebox.showerror("Calibración pH", "Los valores de buffer deben ser numéricos.")
+            mostrar_error(self, "Calibración pH", "Los valores de buffer deben ser numéricos.")
             return
 
         recta = self._calcular_recta(self.punto_ph[1], y1, self.punto_ph[2], y2)
         if recta is None:
-            messagebox.showerror("Calibración pH", "Los dos voltajes leídos son iguales, no se puede calcular la recta.")
+            mostrar_error(self, "Calibración pH", "Los dos voltajes leídos son iguales, no se puede calcular la recta.")
             return
         slope, intercept = recta
 
         self.lbl_ph_resultado.configure(text=f"slope={slope:.6f}  intercept={intercept:.6f}")
 
         if not self.app.enviar_comando(f"CAL:PH:{slope:.6f},{intercept:.6f}"):
-            messagebox.showerror("Calibración pH", "No se pudo enviar al Arduino (¿sigue conectado?).")
+            mostrar_error(self, "Calibración pH", "No se pudo enviar al Arduino (¿sigue conectado?).")
             return
 
         ok = self.app.guardar_calibracion_bd('ph', slope, intercept, notas=f"buffers {y1}/{y2}")
         if ok:
-            messagebox.showinfo("Calibración pH", "Calibración de pH aplicada y guardada correctamente.")
+            mostrar_info(self, "Calibración pH", "Calibración de pH aplicada y guardada correctamente.")
         else:
-            messagebox.showwarning("Calibración pH", "Se aplicó en el Arduino, pero no se pudo guardar en la BD.")
+            mostrar_aviso(self, "Calibración pH", "Se aplicó en el Arduino, pero no se pudo guardar en la BD.")
 
         self.after(500, self._mostrar_calibracion_vigente)
 
     def _aplicar_calibracion_od(self):
         if self.punto_od[1] is None or self.punto_od[2] is None:
-            messagebox.showwarning("Calibración OD600", "Lee ambos puntos antes de calcular.")
+            mostrar_aviso(self, "Calibración OD600", "Lee ambos puntos antes de calcular.")
             return
         try:
             y1 = float(self.entry_od1.get())
             y2 = float(self.entry_od2.get())
         except ValueError:
-            messagebox.showerror("Calibración OD600", "Los valores de OD600 deben ser numéricos.")
+            mostrar_error(self, "Calibración OD600", "Los valores de OD600 deben ser numéricos.")
             return
 
         recta = self._calcular_recta(self.punto_od[1], y1, self.punto_od[2], y2)
         if recta is None:
-            messagebox.showerror("Calibración OD600", "Los dos voltajes leídos son iguales, no se puede calcular la recta.")
+            mostrar_error(self, "Calibración OD600", "Los dos voltajes leídos son iguales, no se puede calcular la recta.")
             return
         slope, intercept = recta
 
         self.lbl_od_resultado.configure(text=f"slope={slope:.6f}  intercept={intercept:.6f}")
 
         if not self.app.enviar_comando(f"CAL:OD:{slope:.6f},{intercept:.6f}"):
-            messagebox.showerror("Calibración OD600", "No se pudo enviar al Arduino (¿sigue conectado?).")
+            mostrar_error(self, "Calibración OD600", "No se pudo enviar al Arduino (¿sigue conectado?).")
             return
 
         ok = self.app.guardar_calibracion_bd('od', slope, intercept, notas=f"puntos OD {y1}/{y2}")
         if ok:
-            messagebox.showinfo("Calibración OD600", "Calibración de OD600 aplicada y guardada correctamente.")
+            mostrar_info(self, "Calibración OD600", "Calibración de OD600 aplicada y guardada correctamente.")
         else:
-            messagebox.showwarning("Calibración OD600", "Se aplicó en el Arduino, pero no se pudo guardar en la BD.")
+            mostrar_aviso(self, "Calibración OD600", "Se aplicó en el Arduino, pero no se pudo guardar en la BD.")
 
         self.after(500, self._mostrar_calibracion_vigente)
 
@@ -1308,12 +1590,12 @@ class CalibracionWindow(ctk.CTkToplevel):
         with self.app.datos_lock:
             actual = self.app.ultimos_datos[0] if self.app.ultimos_datos else None
         if actual is None:
-            messagebox.showwarning("Calibración Temperatura", "Aún no hay lectura de temperatura del sensor.")
+            mostrar_aviso(self, "Calibración Temperatura", "Aún no hay lectura de temperatura del sensor.")
             return
         try:
             referencia = float(self.entry_temp_ref.get())
         except ValueError:
-            messagebox.showerror("Calibración Temperatura", "Ingresa la temperatura de referencia (numérica).")
+            mostrar_error(self, "Calibración Temperatura", "Ingresa la temperatura de referencia (numérica).")
             return
 
         # El offset ya incluido en 'actual' se retira antes de calcular el nuevo,
@@ -1323,15 +1605,15 @@ class CalibracionWindow(ctk.CTkToplevel):
         nuevo_offset = referencia - lectura_sin_offset
 
         if not self.app.enviar_comando(f"CAL:TEMP:{nuevo_offset:.4f}"):
-            messagebox.showerror("Calibración Temperatura", "No se pudo enviar al Arduino (¿sigue conectado?).")
+            mostrar_error(self, "Calibración Temperatura", "No se pudo enviar al Arduino (¿sigue conectado?).")
             return
 
         # Se guarda con slope=1.0 fijo (no se usa) para mantener el esquema uniforme de la tabla
         ok = self.app.guardar_calibracion_bd('temp', 1.0, nuevo_offset, notas=f"ref={referencia}")
         if ok:
-            messagebox.showinfo("Calibración Temperatura", f"Offset aplicado: {nuevo_offset:.4f} °C")
+            mostrar_info(self, "Calibración Temperatura", f"Offset aplicado: {nuevo_offset:.4f} °C")
         else:
-            messagebox.showwarning("Calibración Temperatura", "Se aplicó en el Arduino, pero no se pudo guardar en la BD.")
+            mostrar_aviso(self, "Calibración Temperatura", "Se aplicó en el Arduino, pero no se pudo guardar en la BD.")
 
         self.after(500, self._mostrar_calibracion_vigente)
 
