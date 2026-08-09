@@ -52,6 +52,20 @@ COLOR_TEXTO = "#EAF2FB"
 COLOR_TEXTO_SUAVE = "#9fc0e8"
 FUENTE = "Segoe UI"
 
+# --- Paleta "industrial" para el Dashboard de control (look de HMI/SCADA físico) ---
+COLOR_ACERO = "#15181f"          # panel principal, como chasis metálico
+COLOR_ACERO_CLARO = "#1f2430"    # paneles secundarios / tarjetas de instrumento
+COLOR_ACERO_BORDE = "#3a4152"    # bordes tipo remache/metal
+COLOR_AMARILLO_PELIGRO = "#FFC107"
+COLOR_NEGRO_PELIGRO = "#111111"
+COLOR_LED_ON = "#39FF14"         # verde neón encendido
+COLOR_LED_OFF = "#454b58"        # gris apagado
+COLOR_LED_ALERTA = "#FF3B30"
+COLOR_LED_ALERTA_OFF = "#5a2a26"
+COLOR_DIGITAL_FONDO = "#050705"
+COLOR_DIGITAL_TEXTO = "#39FF14"
+FUENTE_DIGITAL = "Consolas"
+
 
 class ModalBase(ctk.CTkToplevel):
     """Base para reemplazar messagebox/simpledialog con algo que combine
@@ -639,6 +653,145 @@ class LoginApp(ctk.CTk):
             ])
 
 
+class LedIndicador(ctk.CTkFrame):
+    """LED circular con halo de brillo (reemplaza los textos '● Arranque' planos
+    por algo que realmente se vea como un indicador de tablero industrial)."""
+
+    def __init__(self, master, etiqueta, color_on=COLOR_LED_ON, color_off=COLOR_LED_OFF, **kwargs):
+        super().__init__(master, fg_color="transparent", **kwargs)
+        self.color_on = color_on
+        self.color_off = color_off
+
+        self.canvas = tk.Canvas(self, width=26, height=26, bg=COLOR_ACERO, highlightthickness=0)
+        self.canvas.pack(side="left", padx=(0, 6))
+        self.halo = self.canvas.create_oval(2, 2, 24, 24, fill=self.color_off, outline="")
+        self.nucleo = self.canvas.create_oval(7, 7, 19, 19, fill="#0a0a0a", outline="")
+
+        ctk.CTkLabel(self, text=etiqueta, font=(FUENTE, 12, "bold"),
+                     text_color=COLOR_TEXTO_SUAVE).pack(side="left")
+
+    def set_estado(self, encendido):
+        color = self.color_on if encendido else self.color_off
+        self.canvas.itemconfig(self.halo, fill=color)
+
+
+class PIDDiagram(ctk.CTkFrame):
+    """Diagrama P&ID del biorreactor: mismo layout que usa el SCADA web
+    (web/templates/pid_svg.html) pero dibujado en un Canvas de Tkinter,
+    con textura de plano técnico y animación de flujo en las líneas activas."""
+
+    ANCHO, ALTO = 500, 450
+
+    def __init__(self, master, **kwargs):
+        super().__init__(master, fg_color=COLOR_ACERO_CLARO, corner_radius=18,
+                          border_width=2, border_color=COLOR_ACERO_BORDE, **kwargs)
+
+        ctk.CTkLabel(self, text="DIAGRAMA P&ID · BIORREACTOR", font=(FUENTE, 13, "bold"),
+                     text_color=COLOR_TEXTO_SUAVE).pack(pady=(14, 6))
+
+        self.canvas = tk.Canvas(self, width=self.ANCHO, height=self.ALTO,
+                                 bg=COLOR_ACERO_CLARO, highlightthickness=0)
+        self.canvas.pack(padx=14, pady=(0, 14))
+
+        self._dibujar_grid()
+        self._dibujar_esquema()
+        self._fase = 0
+        self._animar()
+
+    def _dibujar_grid(self):
+        for x in range(0, self.ANCHO, 25):
+            self.canvas.create_line(x, 0, x, self.ALTO, fill="#262c3a")
+        for y in range(0, self.ALTO, 25):
+            self.canvas.create_line(0, y, self.ANCHO, y, fill="#262c3a")
+
+    def _dibujar_esquema(self):
+        c = self.canvas
+        off = COLOR_LED_OFF
+
+        # Tanque del biorreactor
+        c.create_rectangle(180, 140, 320, 370, outline="#ffffff", width=2, fill="#16324a")
+        c.create_rectangle(187, 230, 313, 360, outline="", fill="#2A9D8F", stipple="gray50")
+        c.create_text(250, 160, text="BIORREACTOR\nTK-101", fill="#ffffff",
+                      font=(FUENTE, 10, "bold"), justify="center")
+
+        # Eje del agitador
+        self.eje = c.create_line(250, 140, 250, 340, fill=off, width=3)
+
+        # Agitador (relé 5)
+        self.motor = c.create_rectangle(227, 112, 273, 140, outline="#ffffff", fill=off, width=1.5)
+        c.create_text(250, 100, text="M2 AGITADOR", fill=COLOR_TEXTO_SUAVE, font=(FUENTE, 9, "bold"))
+
+        # Calefacción HT1 (relé 1)
+        self.heater = c.create_rectangle(180, 385, 320, 415, outline="#ffffff", fill=off, width=1.5)
+        c.create_text(250, 430, text="HT1 CALEFACCIÓN", fill=COLOR_TEXTO_SUAVE, font=(FUENTE, 9, "bold"))
+
+        # Bomba pH / NaOH (relé 2)
+        self.bomba_ph = c.create_oval(30, 140, 80, 190, outline="#ffffff", fill=off, width=1.5)
+        c.create_text(55, 165, text="⟳", fill="#ffffff", font=(FUENTE, 16))
+        c.create_text(55, 205, text="P-102\nBOMBA pH (NaOH)", fill=COLOR_TEXTO_SUAVE,
+                      font=(FUENTE, 8, "bold"), justify="center")
+        self.linea_ph = c.create_line(80, 165, 180, 180, fill=off, width=2)
+
+        # Bomba IPTG (relé 3)
+        self.bomba_iptg = c.create_oval(30, 255, 80, 305, outline="#ffffff", fill=off, width=1.5)
+        c.create_text(55, 280, text="⟳", fill="#ffffff", font=(FUENTE, 16))
+        c.create_text(55, 320, text="P-103\nBOMBA IPTG", fill=COLOR_TEXTO_SUAVE,
+                      font=(FUENTE, 8, "bold"), justify="center")
+        self.linea_iptg = c.create_line(80, 280, 180, 270, fill=off, width=2)
+
+        # Aireación / air pump (relé 6)
+        self.bomba_aire = c.create_oval(420, 140, 470, 190, outline="#ffffff", fill=off, width=1.5)
+        c.create_text(445, 165, text="⟳", fill="#ffffff", font=(FUENTE, 16))
+        c.create_text(445, 205, text="P-104\nAIR PUMP (O2)", fill=COLOR_TEXTO_SUAVE,
+                      font=(FUENTE, 8, "bold"), justify="center")
+        self.linea_aire = c.create_line(420, 165, 320, 180, fill=off, width=2)
+
+        # Bomba de cosecha (relé 4)
+        self.bomba_cosecha = c.create_oval(420, 255, 470, 305, outline="#ffffff", fill=off, width=1.5)
+        c.create_text(445, 280, text="⟳", fill="#ffffff", font=(FUENTE, 16))
+        c.create_text(445, 320, text="P-105\nBOMBA COSECHA", fill=COLOR_TEXTO_SUAVE,
+                      font=(FUENTE, 8, "bold"), justify="center")
+        self.linea_cosecha_a = c.create_line(320, 270, 420, 280, fill=off, width=2)
+        self.linea_cosecha_b = c.create_line(445, 305, 475, 330, fill=off, width=2)
+        c.create_oval(457, 330, 493, 366, outline="#ffffff", fill="#2c3e50", width=1.5)
+        c.create_text(475, 378, text="V-101", fill=COLOR_TEXTO_SUAVE, font=(FUENTE, 8, "bold"))
+
+        self._lineas_animables = [self.linea_ph, self.linea_iptg, self.linea_aire,
+                                   self.linea_cosecha_a, self.linea_cosecha_b, self.eje]
+
+    def actualizar_estado(self, rele_estados: dict):
+        c = self.canvas
+        on, off = COLOR_LED_ON, COLOR_LED_OFF
+
+        c.itemconfig(self.motor, fill=on if rele_estados.get(5) else off)
+        c.itemconfig(self.eje, fill=on if rele_estados.get(5) else off)
+        c.itemconfig(self.heater, fill=COLOR_AMARILLO_PELIGRO if rele_estados.get(1) else off)
+
+        c.itemconfig(self.bomba_ph, fill=on if rele_estados.get(2) else off)
+        c.itemconfig(self.linea_ph, fill=on if rele_estados.get(2) else off)
+
+        c.itemconfig(self.bomba_iptg, fill=on if rele_estados.get(3) else off)
+        c.itemconfig(self.linea_iptg, fill=on if rele_estados.get(3) else off)
+
+        c.itemconfig(self.bomba_aire, fill=on if rele_estados.get(6) else off)
+        c.itemconfig(self.linea_aire, fill=on if rele_estados.get(6) else off)
+
+        cosecha_on = rele_estados.get(4)
+        c.itemconfig(self.bomba_cosecha, fill=on if cosecha_on else off)
+        c.itemconfig(self.linea_cosecha_a, fill=on if cosecha_on else off)
+        c.itemconfig(self.linea_cosecha_b, fill=on if cosecha_on else off)
+
+    def _animar(self):
+        """Flujo animado (línea punteada en movimiento) en las tuberías activas."""
+        self._fase = (self._fase + 1) % 20
+        for linea in self._lineas_animables:
+            if self.canvas.itemcget(linea, "fill") == COLOR_LED_ON:
+                self.canvas.itemconfig(linea, dash=(6, 4), dashoffset=self._fase)
+            else:
+                self.canvas.itemconfig(linea, dash=())
+        self.after(120, self._animar)
+
+
 class DashboardApp(ctk.CTk):
     def __init__(self, usuario_id=None):
         super().__init__()
@@ -698,90 +851,149 @@ class DashboardApp(ctk.CTk):
         self.actualizar_gui_periodica()
 
     def construir_ui(self):
-        top = ctk.CTkFrame(self, height=140)
+        self.configure(fg_color=COLOR_ACERO)
+
+        # ============ BARRA SUPERIOR: panel de instrumentos ============
+        top = ctk.CTkFrame(self, height=150, fg_color=COLOR_ACERO_CLARO, corner_radius=0,
+                            border_width=0)
         top.pack(fill="x", padx=0, pady=0)
 
-        left = ctk.CTkFrame(top)
-        left.pack(side="left", padx=20, pady=10)
+        left = ctk.CTkFrame(top, fg_color="transparent")
+        left.pack(side="left", padx=24, pady=14)
 
-        leds = ctk.CTkFrame(left)
-        leds.pack()
+        leds = ctk.CTkFrame(left, fg_color=COLOR_ACERO, corner_radius=12)
+        leds.pack(pady=(0, 10), ipadx=10, ipady=8)
 
-        self.lbl_arranque = ctk.CTkLabel(leds, text="● Arranque", text_color="gray", font=(FUENTE, 13))
-        self.lbl_arranque.pack(side="left", padx=6)
+        self.lbl_arranque = LedIndicador(leds, "ARRANQUE")
+        self.lbl_arranque.pack(side="left", padx=10)
 
-        self.lbl_falla = ctk.CTkLabel(leds, text="● Falla", text_color="gray", font=(FUENTE, 13))
-        self.lbl_falla.pack(side="left", padx=6)
+        self.lbl_falla = LedIndicador(leds, "FALLA", color_on=COLOR_LED_ALERTA)
+        self.lbl_falla.pack(side="left", padx=10)
 
-        self.lbl_emergencia = ctk.CTkLabel(leds, text="● Emergencia", text_color="gray", font=(FUENTE, 13))
-        self.lbl_emergencia.pack(side="left", padx=6)
+        self.lbl_emergencia = LedIndicador(leds, "EMERGENCIA", color_on=COLOR_LED_ALERTA)
+        self.lbl_emergencia.pack(side="left", padx=10)
 
-        self.lbl_ultimo = ctk.CTkLabel(left, text="Última lectura: ---", 
-                                       font=(FUENTE, 15, "bold"), text_color="#00eeff")
-        self.lbl_ultimo.pack(anchor="w", pady=8)
+        # Display tipo "panel digital" para la última lectura
+        display = ctk.CTkFrame(left, fg_color=COLOR_DIGITAL_FONDO, corner_radius=10,
+                                border_width=1, border_color=COLOR_ACERO_BORDE)
+        display.pack(fill="x")
+        self.lbl_ultimo = ctk.CTkLabel(display, text="T=--.- °C   pH=--.--   OD600=-.---",
+                                       font=(FUENTE_DIGITAL, 16, "bold"),
+                                       text_color=COLOR_DIGITAL_TEXTO)
+        self.lbl_ultimo.pack(padx=14, pady=8)
 
-        center = ctk.CTkFrame(top)
+        center = ctk.CTkFrame(top, fg_color="transparent")
         center.pack(side="left", expand=True, padx=40)
 
-        puerto_frame = ctk.CTkFrame(center)
-        puerto_frame.pack(pady=8)
+        puerto_frame = ctk.CTkFrame(center, fg_color=COLOR_ACERO, corner_radius=12)
+        puerto_frame.pack(pady=8, ipadx=8, ipady=6)
 
-        ctk.CTkLabel(puerto_frame, text="Puerto:").pack(side="left", padx=5)
+        ctk.CTkLabel(puerto_frame, text="PUERTO SERIAL", font=(FUENTE, 11, "bold"),
+                     text_color=COLOR_TEXTO_SUAVE).pack(side="left", padx=(10, 6))
         self.puerto_combo = ttk.Combobox(puerto_frame, textvariable=self.puerto_var, state="readonly", width=10)
         self.puerto_combo.pack(side="left", padx=5)
         self.refrescar_puertos()
 
-        self.btn_conectar = ctk.CTkButton(puerto_frame, text="Conectar", width=100, command=self.conectar)
+        self.btn_conectar = ctk.CTkButton(puerto_frame, text="Conectar", width=100, corner_radius=10,
+                                          fg_color=COLOR_VERDE, hover_color=COLOR_VERDE_HOVER,
+                                          command=self.conectar)
         self.btn_conectar.pack(side="left", padx=5)
 
-        self.btn_desconectar = ctk.CTkButton(puerto_frame, text="Desconectar", width=100, 
+        self.btn_desconectar = ctk.CTkButton(puerto_frame, text="Desconectar", width=100, corner_radius=10,
+                                            fg_color=COLOR_ACERO_BORDE, hover_color="#4a5266",
                                             command=self.desconectar, state="disabled")
         self.btn_desconectar.pack(side="left", padx=5)
 
-        right = ctk.CTkFrame(top)
-        right.pack(side="right", padx=20)
+        self.lbl_etapa = ctk.CTkLabel(center, text="ETAPA: READY", font=(FUENTE, 20, "bold"),
+                                      text_color=COLOR_AMARILLO_PELIGRO)
+        self.lbl_etapa.pack(pady=(10, 0))
 
-        self.btn_emerg = ctk.CTkButton(right, text="PARO EMERGENCIA", fg_color="#d32f2f", 
-                                      hover_color="#b71c1c", width=140, command=self.paro_emergencia)
-        self.btn_emerg.pack(pady=5)
+        right = ctk.CTkFrame(top, fg_color="transparent")
+        right.pack(side="right", padx=24)
 
-        self.btn_reanudar = ctk.CTkButton(right, text="Reanudar", fg_color="#388e3c", 
-                                         hover_color="#2e7d32", width=140, command=self.reanudar, state="disabled")
-        self.btn_reanudar.pack(pady=5)
+        # Franja de peligro (rayas amarillo/negro) alrededor del botón de paro
+        franja = ctk.CTkFrame(right, fg_color=COLOR_AMARILLO_PELIGRO, corner_radius=12)
+        franja.pack(pady=(0, 6))
+        franja_interior = ctk.CTkFrame(franja, fg_color=COLOR_NEGRO_PELIGRO, corner_radius=9)
+        franja_interior.pack(padx=3, pady=3)
+        self.btn_emerg = ctk.CTkButton(franja_interior, text="⏻ PARO EMERGENCIA", fg_color="#d32f2f",
+                                      hover_color="#b71c1c", width=170, height=42, corner_radius=8,
+                                      font=(FUENTE, 13, "bold"), command=self.paro_emergencia)
+        self.btn_emerg.pack(padx=4, pady=4)
 
-        self.btn_iniciar_cultivo = ctk.CTkButton(right, text="Iniciar Cultivo", fg_color="#1976d2", 
-                                                hover_color="#1565c0", width=140, command=self.iniciar_cultivo, state="disabled")
-        self.btn_iniciar_cultivo.pack(pady=5)
+        botonera_right = ctk.CTkFrame(right, fg_color="transparent")
+        botonera_right.pack()
 
-        self.btn_calibracion = ctk.CTkButton(right, text="Calibración de Sensores", fg_color="#7b1fa2",
-                                            hover_color="#6a1b9a", width=140, command=self.abrir_calibracion,
-                                            state="disabled")
-        self.btn_calibracion.pack(pady=5)
+        self.btn_reanudar = ctk.CTkButton(botonera_right, text="Reanudar", fg_color=COLOR_VERDE,
+                                         hover_color=COLOR_VERDE_HOVER, width=140, corner_radius=10,
+                                         command=self.reanudar, state="disabled")
+        self.btn_reanudar.pack(pady=4)
 
-        self.lbl_etapa = ctk.CTkLabel(right, text="ETAPA: READY", font=(FUENTE, 22, "bold"), text_color="#ffeb3b")
-        self.lbl_etapa.pack(pady=12)
+        self.btn_iniciar_cultivo = ctk.CTkButton(botonera_right, text="Iniciar Cultivo", fg_color=COLOR_AZUL,
+                                                hover_color=COLOR_AZUL_HOVER, width=140, corner_radius=10,
+                                                command=self.iniciar_cultivo, state="disabled")
+        self.btn_iniciar_cultivo.pack(pady=4)
 
-        self.lbl_reles = ctk.CTkLabel(top, text="Relés: --- | Bombas: ---", font=(FUENTE, 12))
-        self.lbl_reles.pack(anchor="center", pady=5)
+        self.btn_calibracion = ctk.CTkButton(botonera_right, text="Calibración de Sensores", fg_color="#7b1fa2",
+                                            hover_color="#6a1b9a", width=140, corner_radius=10,
+                                            command=self.abrir_calibracion, state="disabled")
+        self.btn_calibracion.pack(pady=4)
 
-        graph_frame = ctk.CTkFrame(self)
-        graph_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        self.lbl_reles = ctk.CTkLabel(top, text="Relés: --- | Bombas: ---", font=(FUENTE_DIGITAL, 11),
+                                      text_color=COLOR_TEXTO_SUAVE)
+        self.lbl_reles.pack(anchor="center", pady=(0, 6))
 
+        # ============ CUERPO: P&ID (izquierda) + tendencias (derecha) ============
+        cuerpo = ctk.CTkFrame(self, fg_color=COLOR_ACERO, corner_radius=0)
+        cuerpo.pack(fill="both", expand=True, padx=10, pady=(10, 0))
+
+        self.pid = PIDDiagram(cuerpo)
+        self.pid.pack(side="left", fill="y", padx=(0, 10))
+
+        graph_frame = ctk.CTkFrame(cuerpo, fg_color=COLOR_ACERO_CLARO, corner_radius=18,
+                                    border_width=2, border_color=COLOR_ACERO_BORDE)
+        graph_frame.pack(side="left", fill="both", expand=True)
+
+        plt.style.use("dark_background")
         self.fig, (self.ax_temp, self.ax_ph, self.ax_od) = plt.subplots(3, 1, figsize=(14, 10), sharex=True)
+        self.fig.patch.set_facecolor(COLOR_ACERO_CLARO)
+        for ax in (self.ax_temp, self.ax_ph, self.ax_od):
+            ax.set_facecolor(COLOR_ACERO)
         self.canvas = FigureCanvasTkAgg(self.fig, master=graph_frame)
-        self.canvas.get_tk_widget().pack(fill="both", expand=True, padx=5, pady=5)
+        self.canvas.get_tk_widget().pack(fill="both", expand=True, padx=10, pady=10)
 
-        self.ax_temp.set_title("Temperatura (°C)")
-        self.ax_ph.set_title("pH")
-        self.ax_od.set_title("OD600")
+        self.ax_temp.set_title("Temperatura (°C)", color=COLOR_TEXTO_SUAVE)
+        self.ax_ph.set_title("pH", color=COLOR_TEXTO_SUAVE)
+        self.ax_od.set_title("OD600", color=COLOR_TEXTO_SUAVE)
 
         self.ax_temp.set_ylim(30, 45)
         self.ax_ph.set_ylim(5.0, 9.0)
         self.ax_od.set_ylim(0.0, 3.5)
 
-        self.ax_temp.grid(True)
-        self.ax_ph.grid(True)
-        self.ax_od.grid(True)
+        self.ax_temp.grid(True, color=COLOR_ACERO_BORDE, alpha=0.4)
+        self.ax_ph.grid(True, color=COLOR_ACERO_BORDE, alpha=0.4)
+        self.ax_od.grid(True, color=COLOR_ACERO_BORDE, alpha=0.4)
+
+        # ============ BARRA DE ESTADO INFERIOR ============
+        status_bar = ctk.CTkFrame(self, fg_color=COLOR_ACERO_CLARO, corner_radius=0, height=32)
+        status_bar.pack(fill="x", side="bottom")
+
+        self.lbl_conexion_bd = ctk.CTkLabel(status_bar, text="●  BD: conectando...", font=(FUENTE, 11),
+                                            text_color=COLOR_AMARILLO_PELIGRO)
+        self.lbl_conexion_bd.pack(side="left", padx=16, pady=4)
+
+        self.lbl_reloj = ctk.CTkLabel(status_bar, text="--:--:--", font=(FUENTE_DIGITAL, 11),
+                                      text_color=COLOR_TEXTO_SUAVE)
+        self.lbl_reloj.pack(side="right", padx=16, pady=4)
+
+        self._tick_reloj()
+
+    def _tick_reloj(self):
+        """Reloj de la barra de estado con hora de Tijuana (referencia visual constante,
+        útil para saber de un vistazo si la app sigue viva)."""
+        ahora = datetime.now(TZ_TIJUANA).strftime("%H:%M:%S")
+        self.lbl_reloj.configure(text=ahora)
+        self.after(1000, self._tick_reloj)
 
     def refrescar_puertos(self):
         puertos = [p.device for p in serial.tools.list_ports.comports()]
@@ -810,9 +1022,9 @@ class DashboardApp(ctk.CTk):
             self.btn_calibracion.configure(state="normal")
 
             self.lbl_etapa.configure(text="ETAPA: CONECTADO")
-            self.lbl_ultimo.configure(text="Última lectura: --- (conectando...)")
+            self.lbl_ultimo.configure(text="T=--.- °C   pH=--.--   OD600=-.--- (conectando...)")
 
-            self.lbl_arranque.configure(text_color="green")
+            self.lbl_arranque.set_estado(True)
 
             threading.Thread(target=self.hilo_lectura, daemon=True).start()
 
@@ -822,7 +1034,7 @@ class DashboardApp(ctk.CTk):
             mostrar_info(self, "Éxito", f"Conectado a {puerto}")
 
         except Exception as e:
-            self.lbl_falla.configure(text_color="red")
+            self.lbl_falla.set_estado(True)
             mostrar_error(self, "Error", f"Fallo al conectar:\n{e}")
 
     def desconectar(self):
@@ -835,9 +1047,9 @@ class DashboardApp(ctk.CTk):
         self.btn_iniciar_cultivo.configure(state="disabled")
         self.btn_calibracion.configure(state="disabled")
         self.lbl_etapa.configure(text="ETAPA: DESCONECTADO")
-        self.lbl_ultimo.configure(text="Última lectura: ---")
+        self.lbl_ultimo.configure(text="T=--.- °C   pH=--.--   OD600=-.---")
 
-        self.lbl_arranque.configure(text_color="gray")
+        self.lbl_arranque.set_estado(False)
 
         if self.ventana_calibracion is not None and self.ventana_calibracion.winfo_exists():
             self.ventana_calibracion.destroy()
@@ -946,11 +1158,15 @@ class DashboardApp(ctk.CTk):
                 temp, ph, od600 = self.ultimos_datos
                 self.controlar_actuadores_con_datos(temp, ph, od600)
                 self.actualizar_grafica()
-                self.lbl_ultimo.configure(text=f"Última lectura: T={temp:.1f} (°C) | pH={ph:.2f} | OD600={od600:.3f}")
+                self.lbl_ultimo.configure(text=f"T={temp:.1f} °C   pH={ph:.2f}   OD600={od600:.3f}")
 
                 self.guardar_en_bd(temp, ph, od600)
             else:
                 print("Aún no hay datos nuevos para graficar...")
+
+        # El P&ID se refresca siempre, haya o no datos nuevos del Arduino,
+        # para reflejar de inmediato cambios manuales (paro/reanudar/cultivo).
+        self.pid.actualizar_estado(self.rele_estados)
 
         if self.is_running:
             self.after(5000, self.actualizar_gui_periodica)  # Cada 5 segundos para reducir carga
@@ -959,7 +1175,10 @@ class DashboardApp(ctk.CTk):
         conn = conectar_db()
         if not conn:
             print("[BD] No se pudo conectar para guardar")
+            self.lbl_conexion_bd.configure(text="●  BD: sin conexión", text_color=COLOR_LED_ALERTA)
             return
+        else:
+            self.lbl_conexion_bd.configure(text="●  BD: conectada", text_color=COLOR_LED_ON)
 
         try:
             cursor = conn.cursor()
@@ -1103,7 +1322,7 @@ class DashboardApp(ctk.CTk):
         print("Ejecutando paro de emergencia...")
         self.emergencia = True
         self.etapa = "EMERGENCIA"
-        self.lbl_emergencia.configure(text_color="red")
+        self.lbl_emergencia.set_estado(True)
 
         # Reflejar el apagado también en el estado interno, para que
         # reanudar() y la siguiente lectura de GUI partan de un estado
@@ -1126,7 +1345,7 @@ class DashboardApp(ctk.CTk):
         self.emergencia = False
         self.etapa = "READY"
         self.pausado = False
-        self.lbl_emergencia.configure(text_color="gray")
+        self.lbl_emergencia.set_estado(False)
 
         # Reactivar sistemas esenciales
         self.rele_estados[5] = True   # agitador siempre ON en cultivo
