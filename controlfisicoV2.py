@@ -600,13 +600,13 @@ class LoginApp(ctk.CTk):
     def verificar_login(self):
         user = self.username_entry.get().strip()
         pwd = self.password_entry.get().strip()
-        
+
         print(f"Usuario ingresado: '{user}'")
         print(f"Contraseña ingresada: '{pwd}'")
-        
+
         acceso_concedido = False
         self.usuario_id = None
-        
+
         if user == "admin" and pwd == CLAVE_MAESTRA:
             print("Acceso forzado con clave maestra → abriendo Dashboard")
             acceso_concedido = True
@@ -636,10 +636,10 @@ class LoginApp(ctk.CTk):
         if acceso_concedido:
             print("Ocultando ventana de login...")
             self.withdraw()
-            
+
             print("Creando Dashboard...")
             dashboard = DashboardApp(usuario_id=self.usuario_id)
-            
+
             print("Forzando foco y traer al frente el dashboard...")
             dashboard.lift()
             dashboard.focus_force()
@@ -856,6 +856,7 @@ class DashboardApp(ctk.CTk):
             'od': {'slope': None, 'intercept': None},
             'temp': {'offset': None},
         }
+        self.ultimo_blank_od = None  # (od_v0, timestamp) reportado por el Arduino tras OD:BLANK / CALGET
         self.ventana_calibracion = None
 
         self.rango_control = {
@@ -1128,6 +1129,17 @@ class DashboardApp(ctk.CTk):
                             print(f"[CAL] OD slope={s} intercept={i}")
                         except Exception as e:
                             print(f"[ERROR PARSEO CAL:OD] {e}")
+                        continue
+
+                    if linea.startswith("BLANKOD:") or linea.startswith("OK:BLANKOD:"):
+                        try:
+                            valor = linea.split("BLANKOD:")[-1]
+                            v0 = float(valor)
+                            with self.raw_lock:
+                                self.ultimo_blank_od = (v0, time.time())
+                            print(f"[CAL] Blanco OD (od_v0) = {v0:.4f} V")
+                        except Exception as e:
+                            print(f"[ERROR PARSEO BLANKOD] {e}")
                         continue
 
                     if linea.startswith("CAL:TEMP:"):
@@ -1625,7 +1637,8 @@ class CalibracionWindow(ctk.CTkToplevel):
         self.transient(app)
 
         self.punto_ph = {1: None, 2: None}   # voltaje promedio capturado
-        self.punto_od = {1: None, 2: None}
+        self.od_v0_capturado = None          # voltaje "blanco" (OD:BLANK) recién leído
+        self.punto_od2 = None                # voltaje promedio del punto de OD600 conocido
 
         tabview = ctk.CTkTabview(self)
         tabview.pack(expand=True, fill="both", padx=15, pady=15)
@@ -1689,11 +1702,13 @@ class CalibracionWindow(ctk.CTkToplevel):
     # ---------- OD600 ----------
     def _construir_tab_od(self):
         t = self.tab_od
-        ctk.CTkLabel(t, text="Calibración de Turbidez / OD600 (2 puntos)", font=(FUENTE, 16, "bold")).pack(pady=(10, 5))
+        ctk.CTkLabel(t, text="Calibración de Turbidez / OD600 (Beer-Lambert)", font=(FUENTE, 16, "bold")).pack(pady=(10, 5))
         ctk.CTkLabel(
             t, justify="left",
-            text="1) Punto 1 = 'blanco': sensor en medio de cultivo SIN inóculo (OD600 = 0).\n"
-                 "2) Punto 2 = muestra con OD600 conocido (medido en espectrofotómetro externo)."
+            text="El Arduino calcula OD600 = slope * (-log10(V / V_blanco)) + intercept.\n"
+                 "1) Con el sensor en medio de cultivo SIN inóculo, presiona 'Capturar blanco'.\n"
+                 "2) Con una muestra de OD600 conocido (espectrofotómetro), lee su voltaje\n"
+                 "   e indica el valor conocido para calcular la pendiente."
         ).pack(pady=(0, 10))
 
         self.lbl_cal_od_vigente = ctk.CTkLabel(t, text="Calibración vigente en Arduino: ---")
@@ -1701,14 +1716,12 @@ class CalibracionWindow(ctk.CTkToplevel):
 
         f1 = ctk.CTkFrame(t)
         f1.pack(pady=6, fill="x", padx=20)
-        ctk.CTkLabel(f1, text="Punto 1 - OD600 conocido (blanco):").pack(side="left", padx=5)
-        self.entry_od1 = ctk.CTkEntry(f1, width=80)
-        self.entry_od1.insert(0, "0.00")
-        self.entry_od1.pack(side="left", padx=5)
-        self.btn_od1 = ctk.CTkButton(f1, text="Leer voltaje", command=lambda: self._iniciar_lectura_punto('od', 1))
-        self.btn_od1.pack(side="left", padx=10)
-        self.lbl_od1 = ctk.CTkLabel(f1, text="Voltaje: ---")
-        self.lbl_od1.pack(side="left", padx=5)
+        ctk.CTkLabel(f1, text="Punto 1 - Blanco (sin inóculo):").pack(side="left", padx=5)
+        self.btn_od_blank = ctk.CTkButton(f1, text="Capturar blanco (OD:BLANK)",
+                                           command=self._capturar_blanco_od)
+        self.btn_od_blank.pack(side="left", padx=10)
+        self.lbl_od_blank = ctk.CTkLabel(f1, text="V_blanco: ---")
+        self.lbl_od_blank.pack(side="left", padx=5)
 
         f2 = ctk.CTkFrame(t)
         f2.pack(pady=6, fill="x", padx=20)
@@ -1716,7 +1729,7 @@ class CalibracionWindow(ctk.CTkToplevel):
         self.entry_od2 = ctk.CTkEntry(f2, width=80)
         self.entry_od2.insert(0, "1.00")
         self.entry_od2.pack(side="left", padx=5)
-        self.btn_od2 = ctk.CTkButton(f2, text="Leer voltaje", command=lambda: self._iniciar_lectura_punto('od', 2))
+        self.btn_od2 = ctk.CTkButton(f2, text="Leer voltaje", command=self._leer_punto_od2)
         self.btn_od2.pack(side="left", padx=10)
         self.lbl_od2 = ctk.CTkLabel(f2, text="Voltaje: ---")
         self.lbl_od2.pack(side="left", padx=5)
@@ -1773,11 +1786,9 @@ class CalibracionWindow(ctk.CTkToplevel):
     def _iniciar_lectura_punto(self, tipo, punto):
         botones = {
             ('ph', 1): self.btn_ph1, ('ph', 2): self.btn_ph2,
-            ('od', 1): self.btn_od1, ('od', 2): self.btn_od2,
         }
         labels = {
             ('ph', 1): self.lbl_ph1, ('ph', 2): self.lbl_ph2,
-            ('od', 1): self.lbl_od1, ('od', 2): self.lbl_od2,
         }
         botones[(tipo, punto)].configure(state="disabled")
         labels[(tipo, punto)].configure(text="Leyendo...")
@@ -1805,11 +1816,9 @@ class CalibracionWindow(ctk.CTkToplevel):
     def _finalizar_lectura_punto(self, tipo, punto):
         botones = {
             ('ph', 1): self.btn_ph1, ('ph', 2): self.btn_ph2,
-            ('od', 1): self.btn_od1, ('od', 2): self.btn_od2,
         }
         labels = {
             ('ph', 1): self.lbl_ph1, ('ph', 2): self.lbl_ph2,
-            ('od', 1): self.lbl_od1, ('od', 2): self.lbl_od2,
         }
         botones[(tipo, punto)].configure(state="normal")
 
@@ -1823,8 +1832,63 @@ class CalibracionWindow(ctk.CTkToplevel):
 
         if tipo == 'ph':
             self.punto_ph[punto] = promedio
+
+    # ---------- OD600: captura de blanco y punto de muestra ----------
+    def _capturar_blanco_od(self):
+        """Pide al Arduino que capture V0 físicamente (comando OD:BLANK), en
+        vez de tomar un voltaje 'blanco' y meterlo en una recta lineal como
+        si fuera pH. od_v0 vive en el Arduino/EEPROM; aquí solo esperamos
+        la confirmación para reflejarla en la UI."""
+        self.btn_od_blank.configure(state="disabled")
+        self.lbl_od_blank.configure(text="Capturando...")
+        with self.app.raw_lock:
+            self.app.ultimo_blank_od = None
+        self.app.enviar_comando("OD:BLANK")
+        self.after(700, self._revisar_blanco_od)
+
+    def _revisar_blanco_od(self):
+        self.btn_od_blank.configure(state="normal")
+        with self.app.raw_lock:
+            blank = self.app.ultimo_blank_od
+        if not blank:
+            self.lbl_od_blank.configure(text="V_blanco: SIN RESPUESTA")
+            mostrar_aviso(self, "Calibración OD600", "No se recibió confirmación del blanco. Verifica la conexión.")
+            return
+        v0, ts = blank
+        self.od_v0_capturado = v0
+        self.lbl_od_blank.configure(text=f"V_blanco: {v0:.4f} V")
+
+    def _leer_punto_od2(self):
+        if self.od_v0_capturado is None:
+            mostrar_aviso(self, "Calibración OD600", "Primero captura el blanco (Punto 1).")
+            return
+        self.btn_od2.configure(state="disabled")
+        self.lbl_od2.configure(text="Leyendo...")
+        self._muestras_od2 = []
+        self._colectar_muestra_od2(self.MUESTRAS_POR_PUNTO)
+
+    def _colectar_muestra_od2(self, restantes):
+        self.app.solicitar_raw()
+        self.after(self.INTERVALO_MUESTRA_MS, lambda: self._revisar_muestra_od2(restantes))
+
+    def _revisar_muestra_od2(self, restantes):
+        with self.app.raw_lock:
+            raw = self.app.ultimo_raw
+        if raw:
+            v_ph, v_od, ts = raw
+            if time.time() - ts < 1.5:
+                self._muestras_od2.append(v_od)
+
+        if restantes > 1:
+            self._colectar_muestra_od2(restantes - 1)
         else:
-            self.punto_od[punto] = promedio
+            self.btn_od2.configure(state="normal")
+            if not self._muestras_od2:
+                self.lbl_od2.configure(text="Voltaje: SIN DATOS")
+                mostrar_aviso(self, "Calibración OD600", "No se recibió respuesta del Arduino. Verifica la conexión.")
+                return
+            self.punto_od2 = sum(self._muestras_od2) / len(self._muestras_od2)
+            self.lbl_od2.configure(text=f"Voltaje: {self.punto_od2:.4f} V")
 
     # ---------- Cálculo y aplicación ----------
     def _calcular_recta(self, v1, y1, v2, y2):
@@ -1834,9 +1898,26 @@ class CalibracionWindow(ctk.CTkToplevel):
         intercept = y1 - slope * v1
         return slope, intercept
 
+    # Separación mínima de voltaje considerada "señal real" (por debajo de
+    # esto, el ADC de 10 bits (~4.9 mV/cuenta) solo está viendo ruido y
+    # cualquier pendiente calculada será inestable/sin sentido).
+    VOLTAJE_MIN_SEPARACION = 0.05
+
     def _aplicar_calibracion_ph(self):
         if self.punto_ph[1] is None or self.punto_ph[2] is None:
             mostrar_aviso(self, "Calibración pH", "Lee ambos puntos antes de calcular.")
+            return
+
+        if abs(self.punto_ph[1] - self.punto_ph[2]) < self.VOLTAJE_MIN_SEPARACION:
+            mostrar_error(
+                self, "Calibración pH",
+                f"Los dos voltajes leídos son casi idénticos "
+                f"({self.punto_ph[1]:.4f} V vs {self.punto_ph[2]:.4f} V, diferencia < "
+                f"{self.VOLTAJE_MIN_SEPARACION*1000:.0f} mV).\n\n"
+                "Con esa diferencia el cálculo solo ajusta ruido del ADC y produce una "
+                "pendiente inestable. Verifica que el sensor esté realmente en el buffer "
+                "correcto (o que no esté desconectado/flotando) antes de continuar."
+            )
             return
         try:
             y1 = float(self.entry_ph1.get())
@@ -1866,35 +1947,90 @@ class CalibracionWindow(ctk.CTkToplevel):
         self.after(500, self._mostrar_calibracion_vigente)
 
     def _aplicar_calibracion_od(self):
-        if self.punto_od[1] is None or self.punto_od[2] is None:
-            mostrar_aviso(self, "Calibración OD600", "Lee ambos puntos antes de calcular.")
+        """OD600 en el firmware se calcula con el modelo de Beer-Lambert:
+            OD600 = od_slope * ( -log10(V / od_v0) ) + od_intercept
+        NO como una recta lineal V->OD (ese era el bug: el wizard anterior
+        ajustaba una recta v->OD igual que pH, pero el Arduino nunca
+        consume esa recta así, y además nunca recibía el comando OD:BLANK,
+        por lo que od_v0 se quedaba en 0 y OD600 siempre salía 0.000).
+
+        Aquí: el Punto 1 (blanco) define od_v0 directamente en el Arduino
+        (ver _capturar_blanco_od). El Punto 2 (muestra de OD600 conocido)
+        se usa para resolver la pendiente, fijando intercept=0 -- que es lo
+        físicamente correcto: en V=V0 (blanco), -log10(1)=0, así que
+        OD600 debe dar 0 en el blanco.
+        """
+        import math
+
+        if self.od_v0_capturado is None:
+            mostrar_aviso(self, "Calibración OD600", "Captura primero el blanco (Punto 1).")
             return
+        if self.punto_od2 is None:
+            mostrar_aviso(self, "Calibración OD600", "Lee el voltaje del Punto 2 antes de calcular.")
+            return
+
+        v0 = self.od_v0_capturado
+        v2 = self.punto_od2
+
+        if abs(v2 - v0) < self.VOLTAJE_MIN_SEPARACION:
+            mostrar_error(
+                self, "Calibración OD600",
+                f"El voltaje de la muestra ({v2:.4f} V) es casi idéntico al blanco "
+                f"({v0:.4f} V); la diferencia es menor a {self.VOLTAJE_MIN_SEPARACION*1000:.0f} mV.\n\n"
+                "Eso es ruido del ADC, no una señal real de turbidez: revisa que la muestra "
+                "realmente tenga biomasa y que el sensor óptico esté bien alineado/limpio "
+                "antes de calibrar."
+            )
+            return
+
         try:
-            y1 = float(self.entry_od1.get())
-            y2 = float(self.entry_od2.get())
+            od2_conocido = float(self.entry_od2.get())
         except ValueError:
-            mostrar_error(self, "Calibración OD600", "Los valores de OD600 deben ser numéricos.")
+            mostrar_error(self, "Calibración OD600", "El valor de OD600 de la muestra debe ser numérico.")
             return
 
-        recta = self._calcular_recta(self.punto_od[1], y1, self.punto_od[2], y2)
-        if recta is None:
-            mostrar_error(self, "Calibración OD600", "Los dos voltajes leídos son iguales, no se puede calcular la recta.")
+        if od2_conocido <= 0:
+            mostrar_error(self, "Calibración OD600", "El OD600 conocido del Punto 2 debe ser mayor que 0.")
             return
-        slope, intercept = recta
 
-        self.lbl_od_resultado.configure(text=f"slope={slope:.6f}  intercept={intercept:.6f}")
+        ratio = v2 / v0
+        if ratio <= 0:
+            mostrar_error(self, "Calibración OD600", "Voltaje inválido para calcular el logaritmo (¿sensor desconectado?).")
+            return
 
+        log_ratio = -math.log10(ratio)
+        if abs(log_ratio) < 1e-4:
+            mostrar_error(self, "Calibración OD600", "La razón V/V_blanco es prácticamente 1; no hay señal suficiente para calibrar.")
+            return
+
+        slope = od2_conocido / log_ratio
+        intercept = 0.0
+
+        self.lbl_od_resultado.configure(
+            text=f"V_blanco={v0:.4f}V  slope={slope:.6f}  intercept={intercept:.6f}"
+        )
+
+        # 1) Blanco ya fue enviado al Arduino con OD:BLANK (queda en EEPROM).
+        # 2) Ahora enviamos slope/intercept.
         if not self.app.enviar_comando(f"CAL:OD:{slope:.6f},{intercept:.6f}"):
             mostrar_error(self, "Calibración OD600", "No se pudo enviar al Arduino (¿sigue conectado?).")
             return
 
-        ok = self.app.guardar_calibracion_bd('od', slope, intercept, notas=f"puntos OD {y1}/{y2}")
+        ok = self.app.guardar_calibracion_bd(
+            'od', slope, intercept,
+            notas=f"V_blanco={v0:.4f}V, punto2 OD={od2_conocido} @ {v2:.4f}V"
+        )
         if ok:
             mostrar_info(self, "Calibración OD600", "Calibración de OD600 aplicada y guardada correctamente.")
         else:
             mostrar_aviso(self, "Calibración OD600", "Se aplicó en el Arduino, pero no se pudo guardar en la BD.")
 
         self.after(500, self._mostrar_calibracion_vigente)
+
+    # Un offset de temperatura mayor a esto casi siempre indica un problema
+    # de hardware (sensor flotando/mal contacto/dirección ROM incorrecta)
+    # y no una desviación real de fábrica del DS18B20 (que suele ser <1°C).
+    OFFSET_TEMP_SOSPECHOSO = 10.0
 
     def _aplicar_calibracion_temp(self):
         with self.app.datos_lock:
@@ -1913,6 +2049,18 @@ class CalibracionWindow(ctk.CTkToplevel):
         offset_previo = self.app.calibracion_actual.get('temp', {}).get('offset') or 0.0
         lectura_sin_offset = actual - offset_previo
         nuevo_offset = referencia - lectura_sin_offset
+
+        if abs(nuevo_offset) > self.OFFSET_TEMP_SOSPECHOSO:
+            if not confirmar(
+                self, "Offset inusualmente grande",
+                f"El offset calculado es {nuevo_offset:.2f} °C (referencia={referencia:.2f} °C, "
+                f"lectura cruda del sensor≈{lectura_sin_offset:.2f} °C).\n\n"
+                "Un DS18B20 real casi nunca se desvía más de 1-2°C de fábrica. Un offset así "
+                "de grande normalmente indica un problema de hardware (mal contacto, dirección "
+                "ROM equivocada, cable suelto) más que una calibración legítima.\n\n"
+                "¿Quieres aplicarlo de todas formas?"
+            ):
+                return
 
         if not self.app.enviar_comando(f"CAL:TEMP:{nuevo_offset:.4f}"):
             mostrar_error(self, "Calibración Temperatura", "No se pudo enviar al Arduino (¿sigue conectado?).")
