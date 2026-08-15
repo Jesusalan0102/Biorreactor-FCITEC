@@ -876,6 +876,12 @@ class DashboardApp(ctk.CTk):
         self.bomba_iptg = False
         self.bomba_cosecha = False
 
+        # Relés de bombas de dosificación que el firmware vigila con el
+        # sensor de flujo (ver chequearFlujoBombas en codigotesisV3.ino).
+        # Debe coincidir exactamente con RELES_DOSIFICACION del firmware:
+        # 2 = pH/NaOH, 3 = IPTG, 4 = cosecha.
+        self.RELES_DOSIFICACION = {2: "pH/NaOH", 3: "IPTG", 4: "Cosecha"}
+
         self.datos = {
             "tiempo": [],
             "temperatura": [],
@@ -896,6 +902,18 @@ class DashboardApp(ctk.CTk):
         }
         self.ultimo_blank_od = None  # (od_v0, timestamp) reportado por el Arduino tras OD:BLANK / CALGET
         self.ventana_calibracion = None
+
+        # --- Estado del sensor de flujo (FL1) ---
+        self.flujo_lock = threading.Lock()
+        self.flujo_pulsos = 0
+        self.flujo_litros_acum = 0.0
+        # num_rele -> timestamp de la última advertencia WARNING:BOMBA_SIN_FLUJO
+        # recibida del firmware. Presente en el dict = alerta activa.
+        self.alertas_flujo = {}
+        # Relés para los que ya se mostró el aviso emergente (evita
+        # mostrar el mismo modal repetidamente mientras la alerta sigue
+        # activa); se limpia cuando el relé se apaga.
+        self.alertas_flujo_avisadas = set()
 
         self.rango_control = {
             'temperatura': {'min': 36.5, 'max': 37.5},
@@ -936,6 +954,11 @@ class DashboardApp(ctk.CTk):
         self.lbl_emergencia = LedIndicador(leds, "EMERGENCIA", color_on=COLOR_LED_ALERTA)
         self.lbl_emergencia.pack(side="left", padx=10)
 
+        # Se enciende (rojo) cuando hay al menos una alerta activa de
+        # "bomba sin flujo" (ver WARNING:BOMBA_SIN_FLUJO en hilo_lectura).
+        self.lbl_flujo = LedIndicador(leds, "FLUJO", color_on=COLOR_LED_ALERTA)
+        self.lbl_flujo.pack(side="left", padx=10)
+
         # Display tipo "panel digital" para la última lectura
         display = ctk.CTkFrame(left, fg_color=COLOR_DIGITAL_FONDO, corner_radius=10,
                                 border_width=1, border_color=COLOR_ACERO_BORDE)
@@ -944,6 +967,13 @@ class DashboardApp(ctk.CTk):
                                        font=(FUENTE_DIGITAL, 16, "bold"),
                                        text_color=COLOR_DIGITAL_TEXTO)
         self.lbl_ultimo.pack(padx=14, pady=8)
+
+        # Segunda línea del panel digital: estado del sensor de flujo
+        # (volumen acumulado desde que arrancó el Arduino). Se actualiza
+        # con el polling periódico de FLOW en actualizar_gui_periodica.
+        self.lbl_flujo_info = ctk.CTkLabel(display, text="Flujo: --- pulsos (---.-- L acum)",
+                                           font=(FUENTE_DIGITAL, 12), text_color=COLOR_TEXTO_SUAVE)
+        self.lbl_flujo_info.pack(padx=14, pady=(0, 8))
 
         center = ctk.CTkFrame(top, fg_color="transparent")
         center.pack(side="left", expand=True, padx=40)
@@ -1001,6 +1031,11 @@ class DashboardApp(ctk.CTk):
                                             hover_color="#6a1b9a", width=140, corner_radius=10,
                                             command=self.abrir_calibracion, state="disabled")
         self.btn_calibracion.pack(pady=4)
+
+        self.btn_consultar_flujo = ctk.CTkButton(botonera_right, text="Consultar Flujo", fg_color=COLOR_PANEL,
+                                                 hover_color="#1c3a66", width=140, corner_radius=10,
+                                                 command=self.consultar_flujo, state="disabled")
+        self.btn_consultar_flujo.pack(pady=4)
 
         self.lbl_reles = ctk.CTkLabel(top, text="Relés: --- | Bombas: ---", font=(FUENTE_DIGITAL, 11),
                                       text_color=COLOR_TEXTO_SUAVE)
@@ -1092,6 +1127,7 @@ class DashboardApp(ctk.CTk):
             self.btn_desconectar.configure(state="normal")
             self.btn_iniciar_cultivo.configure(state="normal")
             self.btn_calibracion.configure(state="normal")
+            self.btn_consultar_flujo.configure(state="normal")
 
             self.lbl_etapa.configure(text="ETAPA: CONECTADO")
             self.lbl_ultimo.configure(text="T=--.- °C   pH=--.--   OD600=-.--- (conectando...)")
@@ -1118,8 +1154,14 @@ class DashboardApp(ctk.CTk):
         self.btn_desconectar.configure(state="disabled")
         self.btn_iniciar_cultivo.configure(state="disabled")
         self.btn_calibracion.configure(state="disabled")
+        self.btn_consultar_flujo.configure(state="disabled")
         self.lbl_etapa.configure(text="ETAPA: DESCONECTADO")
         self.lbl_ultimo.configure(text="T=--.- °C   pH=--.--   OD600=-.---")
+        self.lbl_flujo_info.configure(text="Flujo: --- pulsos (---.-- L acum)")
+        self.lbl_flujo.set_estado(False)
+        with self.flujo_lock:
+            self.alertas_flujo.clear()
+            self.alertas_flujo_avisadas.clear()
 
         self.lbl_arranque.set_estado(False)
 
@@ -1196,6 +1238,28 @@ class DashboardApp(ctk.CTk):
                             print(f"[ERROR PARSEO CAL:TEMP] {e}")
                         continue
 
+                    if linea.startswith("WARNING:BOMBA_SIN_FLUJO:RELE:"):
+                        try:
+                            num = int(linea.split("RELE:")[-1])
+                            with self.flujo_lock:
+                                self.alertas_flujo[num] = time.time()
+                            print(f"[FLUJO][ADVERTENCIA] Bomba en relé {num} sin flujo detectado")
+                        except Exception as e:
+                            print(f"[ERROR PARSEO WARNING FLUJO] {e}")
+                        continue
+
+                    if linea.startswith("FLOW:PULSOS:"):
+                        try:
+                            resto = linea[len("FLOW:PULSOS:"):]
+                            pulsos_parte, litros_parte = resto.split(",LITROS_ACUM:")
+                            with self.flujo_lock:
+                                self.flujo_pulsos = int(pulsos_parte)
+                                self.flujo_litros_acum = float(litros_parte)
+                            print(f"[FLUJO] {pulsos_parte} pulsos, {litros_parte} L acumulados")
+                        except Exception as e:
+                            print(f"[ERROR PARSEO FLOW] {e}")
+                        continue
+
                     if linea.startswith("OK:CAL") or linea.startswith("ERROR"):
                         print(f"[RESPUESTA CAL] {linea}")
                         continue
@@ -1250,6 +1314,44 @@ class DashboardApp(ctk.CTk):
         # El P&ID se refresca siempre, haya o no datos nuevos del Arduino,
         # para reflejar de inmediato cambios manuales (paro/reanudar/cultivo).
         self.pid.actualizar_estado(self.rele_estados)
+
+        # --- Sensor de flujo: monitoreo (LED + volumen acumulado) y
+        # control (limpieza de alertas de relés ya apagados, aviso
+        # emergente una sola vez por alerta nueva) ---
+        with self.flujo_lock:
+            # Una alerta solo tiene sentido mientras el relé que la generó
+            # sigue encendido; si Python ya lo apagó (o el firmware lo
+            # apagó por watchdog/paro), se limpia sola en vez de quedar
+            # pegada indefinidamente.
+            for num in list(self.alertas_flujo.keys()):
+                if not self.rele_estados.get(num, False):
+                    self.alertas_flujo.pop(num, None)
+                    self.alertas_flujo_avisadas.discard(num)
+
+            hay_alerta_activa = bool(self.alertas_flujo)
+            pulsos = self.flujo_pulsos
+            litros = self.flujo_litros_acum
+            nuevas_alertas = [n for n in self.alertas_flujo if n not in self.alertas_flujo_avisadas]
+            for n in nuevas_alertas:
+                self.alertas_flujo_avisadas.add(n)
+
+        self.lbl_flujo.set_estado(hay_alerta_activa)
+        self.lbl_flujo_info.configure(text=f"Flujo: {pulsos} pulsos ({litros:.3f} L acum)")
+
+        for num in nuevas_alertas:
+            nombre_bomba = self.RELES_DOSIFICACION.get(num, f"Relé {num}")
+            mostrar_aviso(
+                self, "Bomba sin flujo",
+                f"No se detectó flujo en la bomba de {nombre_bomba} (relé {num}) después de "
+                "varios segundos encendida.\n\nRevisa que la manguera no esté doblada, que el "
+                "reservorio no esté vacío, y que la bomba no esté atascada."
+            )
+
+        # Polling: pide el estado de flujo actualizado para el próximo
+        # ciclo (respuesta asíncrona, la procesa hilo_lectura). Mismo
+        # patrón que el resto de la telemetría periódica.
+        if self.serial and self.serial.is_open:
+            self.solicitar_flujo()
 
         if self.is_running:
             self._after_ids['gui'] = self.after(5000, self.actualizar_gui_periodica)  # Cada 5 segundos para reducir carga
@@ -1544,6 +1646,18 @@ class DashboardApp(ctk.CTk):
 
     def solicitar_calibracion_actual(self):
         self.enviar_comando("CALGET")
+
+    def solicitar_flujo(self):
+        self.enviar_comando("FLOW")
+
+    def consultar_flujo(self):
+        """Botón de control manual: pide el estado del sensor de flujo
+        de inmediato en vez de esperar al próximo ciclo de polling
+        automático (ver actualizar_gui_periodica)."""
+        if not (self.serial and self.serial.is_open):
+            mostrar_aviso(self, "Flujo", "Conecta primero el Arduino")
+            return
+        self.solicitar_flujo()
 
     def obtener_ultima_calibracion_bd(self, sensor):
         """Devuelve {'slope':..., 'intercept':...} con la calibración más
