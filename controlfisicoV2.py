@@ -685,7 +685,12 @@ class LedIndicador(ctk.CTkFrame):
 class PIDDiagram(ctk.CTkFrame):
     """Diagrama P&ID del biorreactor: mismo layout que usa el SCADA web
     (web/templates/pid_svg.html) pero dibujado en un Canvas de Tkinter,
-    con textura de plano técnico y animación de flujo en las líneas activas."""
+    con textura de plano técnico y animación de flujo en las líneas activas.
+
+    El canvas ahora es responsivo: al redimensionar la ventana, todos los
+    elementos dibujados se escalan proporcionalmente (canvas.scale) en vez
+    de quedarse fijos a 500x450, para que no se vea "cortado" en pantallas
+    grandes o ventanas maximizadas."""
 
     ANCHO, ALTO = 500, 450
 
@@ -698,13 +703,36 @@ class PIDDiagram(ctk.CTkFrame):
 
         self.canvas = tk.Canvas(self, width=self.ANCHO, height=self.ALTO,
                                  bg=COLOR_ACERO_CLARO, highlightthickness=0)
-        self.canvas.pack(padx=14, pady=(0, 14))
+        self.canvas.pack(padx=14, pady=(0, 14), fill="both", expand=True)
 
         self._dibujar_grid()
         self._dibujar_esquema()
         self._fase = 0
         self._animando = True
+        self._after_id_animar = None
+
+        # Tamaño de referencia contra el que se calculan los factores de
+        # escala cuando el canvas cambia de tamaño.
+        self._tam_referencia = (self.ANCHO, self.ALTO)
+        self.canvas.bind("<Configure>", self._on_resize)
+
         self._animar()
+
+    def _on_resize(self, event):
+        nuevo_ancho, nuevo_alto = event.width, event.height
+        if nuevo_ancho < 50 or nuevo_alto < 50:
+            return
+        viejo_ancho, viejo_alto = self._tam_referencia
+        if viejo_ancho <= 0 or viejo_alto <= 0:
+            return
+        sx = nuevo_ancho / viejo_ancho
+        sy = nuevo_alto / viejo_alto
+        # Evita reescalados innecesarios por eventos de Configure repetidos
+        # con el mismo tamaño (p. ej. al hacer pack inicial).
+        if abs(sx - 1.0) < 0.01 and abs(sy - 1.0) < 0.01:
+            return
+        self.canvas.scale("all", 0, 0, sx, sy)
+        self._tam_referencia = (nuevo_ancho, nuevo_alto)
 
     def _dibujar_grid(self):
         for x in range(0, self.ANCHO, 25):
@@ -790,8 +818,17 @@ class PIDDiagram(ctk.CTkFrame):
         c.itemconfig(self.linea_cosecha_b, fill=on if cosecha_on else off)
 
     def detener(self):
-        """Detiene la animación (llamar al cerrar el Dashboard)."""
+        """Detiene la animación y cancela el after() pendiente (llamar al
+        cerrar el Dashboard). Sin esto, Tcl intenta ejecutar un callback
+        "<id>_animar" sobre un widget ya destruido y lanza
+        'invalid command name ..._animar' al cerrar la ventana."""
         self._animando = False
+        if self._after_id_animar is not None:
+            try:
+                self.after_cancel(self._after_id_animar)
+            except Exception:
+                pass
+            self._after_id_animar = None
 
     def _animar(self):
         """Flujo animado (línea punteada en movimiento) en las tuberías activas."""
@@ -803,7 +840,7 @@ class PIDDiagram(ctk.CTkFrame):
                 self.canvas.itemconfig(linea, dash=(6, 4), dashoffset=self._fase)
             else:
                 self.canvas.itemconfig(linea, dash=())
-        self.after(120, self._animar)
+        self._after_id_animar = self.after(120, self._animar)
 
 
 class DashboardApp(ctk.CTk):
@@ -815,6 +852,7 @@ class DashboardApp(ctk.CTk):
         w = self.winfo_screenwidth()
         h = self.winfo_screenheight()
         self.geometry(f"{w}x{h}+0+0")
+        self.minsize(1100, 700)
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
 
         self.serial = None
@@ -972,8 +1010,12 @@ class DashboardApp(ctk.CTk):
         cuerpo = ctk.CTkFrame(self, fg_color=COLOR_ACERO, corner_radius=0)
         cuerpo.pack(fill="both", expand=True, padx=10, pady=(10, 0))
 
-        self.pid = PIDDiagram(cuerpo)
+        # El P&ID conserva un ancho mínimo fijo (para que el esquema no se
+        # deforme demasiado) pero ahora sí crece en altura con la ventana,
+        # y su propio canvas se reescala internamente (ver PIDDiagram).
+        self.pid = PIDDiagram(cuerpo, width=460)
         self.pid.pack(side="left", fill="y", padx=(0, 10))
+        self.pid.pack_propagate(False)
 
         graph_frame = ctk.CTkFrame(cuerpo, fg_color=COLOR_ACERO_CLARO, corner_radius=18,
                                     border_width=2, border_color=COLOR_ACERO_BORDE)
@@ -985,6 +1027,9 @@ class DashboardApp(ctk.CTk):
         for ax in (self.ax_temp, self.ax_ph, self.ax_od):
             ax.set_facecolor(COLOR_ACERO)
         self.canvas = FigureCanvasTkAgg(self.fig, master=graph_frame)
+        # fill="both" + expand=True hace que el widget de Tk (y por lo tanto
+        # la figura de matplotlib vía su resize_event) crezca junto con la
+        # ventana en vez de quedarse recortado al tamaño inicial.
         self.canvas.get_tk_widget().pack(fill="both", expand=True, padx=10, pady=10)
 
         self.ax_temp.set_title("Temperatura (°C)", color=COLOR_TEXTO_SUAVE)
@@ -1360,6 +1405,15 @@ class DashboardApp(ctk.CTk):
                 self.ax_od.legend()
                 self.ax_od.grid(True)
 
+                # Techo dinámico: antes estaba fijo en 3.5, así que si el
+                # OD600 real se acercaba/superaba ese valor la curva se veía
+                # "cortada" (igual que pasó con la calibración corrupta que
+                # saturaba el cálculo exactamente en 3.5). Con esto la
+                # gráfica siempre deja margen por arriba del máximo real.
+                od_max = max(self.datos["od600"], default=0.0)
+                techo_od = max(3.5, od_max * 1.15)
+                self.ax_od.set_ylim(0.0, techo_od)
+
                 print(f"Gráfica actualizada con {len(t)} puntos de datos")
             else:
                 print("No hay datos aún para graficar")
@@ -1546,6 +1600,21 @@ class DashboardApp(ctk.CTk):
 
         cal_od = self.obtener_ultima_calibracion_bd('od')
         if cal_od:
+            # El modelo actual de OD600 (Beer-Lambert) SIEMPRE debe traer
+            # intercept=0.0 -- si la fila más reciente en la BD trae un
+            # intercept distinto, es casi seguro una calibración vieja de
+            # cuando el modelo era una recta lineal simple. Aplicarla a
+            # ciegas satura el cálculo del Arduino y deja el OD600 pegado
+            # en el techo de la gráfica (3.5). Se avisa en consola en vez
+            # de aplicarla en silencio.
+            if abs(cal_od.get('intercept', 0.0)) > 1e-6:
+                print(
+                    f"[CAL][ADVERTENCIA] Calibración de OD600 en BD tiene intercept="
+                    f"{cal_od['intercept']} (debería ser 0.0). Parece una calibración "
+                    "obsoleta previa al modelo Beer-Lambert. Revisa/limpia la tabla "
+                    "calibracion_sensores (ver limpiar_calibracion_od.sql) antes de confiar "
+                    "en esta sincronización."
+                )
             self.enviar_comando(f"CAL:OD:{cal_od['slope']:.6f},{cal_od['intercept']:.6f}")
             print("[CAL] OD600 sincronizado desde BD hacia Arduino")
 
@@ -1624,7 +1693,12 @@ class DashboardApp(ctk.CTk):
 class CalibracionWindow(ctk.CTkToplevel):
     """Wizard de calibración de 2 puntos para pH y OD600, y de offset para
     temperatura. Lee voltaje crudo del Arduino (comando RAW), promedia
-    varias muestras, calcula pendiente/intercepto y aplica + guarda."""
+    varias muestras, calcula pendiente/intercepto y aplica + guarda.
+
+    La ventana ahora se dimensiona como proporción de la pantalla (en vez
+    de un tamaño fijo 620x560 que en pantallas grandes se veía chica y
+    en pantallas chicas se veía cortada), es redimensionable, tiene un
+    tamaño mínimo razonable y queda centrada sobre el Dashboard."""
 
     MUESTRAS_POR_PUNTO = 6
     INTERVALO_MUESTRA_MS = 400
@@ -1633,7 +1707,16 @@ class CalibracionWindow(ctk.CTkToplevel):
         super().__init__(app)
         self.app = app
         self.title("Calibración de Sensores")
-        self.geometry("620x560")
+
+        ancho_pantalla = self.winfo_screenwidth()
+        alto_pantalla = self.winfo_screenheight()
+        ancho = min(760, max(620, int(ancho_pantalla * 0.45)))
+        alto = min(760, max(600, int(alto_pantalla * 0.75)))
+        x = (ancho_pantalla - ancho) // 2
+        y = (alto_pantalla - alto) // 2
+        self.geometry(f"{ancho}x{alto}+{x}+{y}")
+        self.minsize(600, 560)
+        self.resizable(True, True)
         self.transient(app)
 
         self.punto_ph = {1: None, 2: None}   # voltaje promedio capturado
@@ -1903,6 +1986,20 @@ class CalibracionWindow(ctk.CTkToplevel):
     # cualquier pendiente calculada será inestable/sin sentido).
     VOLTAJE_MIN_SEPARACION = 0.05
 
+    # Un |slope| mayor a esto es prácticamente imposible en un circuito
+    # real, tanto para pH (ADC 0-5V mapeado a pH 0-14: slope típico de
+    # orden bajo, ±2 a ±10) como para OD600 (modelo Beer-Lambert). Un
+    # slope disparado significa que los dos puntos de calibración eran
+    # casi indistinguibles entre sí (voltajes casi idénticos en pH, o
+    # razón V/V_blanco casi 1 en OD600), y produce una lectura siempre
+    # recortada en un extremo (0/14 en pH, el techo de seguridad en
+    # OD600) sin ningún error visible. Esto fue justo lo que causó que
+    # ambos sensores se quedaran "pegados". Mismo umbral que usa el
+    # firmware para rechazar CAL:PH/CAL:OD (ver SLOPE_SOSPECHOSO en
+    # codigotesisV3.ino) -- se bloquea aquí también, sin opción de
+    # forzarlo, porque el Arduino lo rechazaría de todas formas.
+    SLOPE_SOSPECHOSO = 50.0
+
     def _aplicar_calibracion_ph(self):
         if self.punto_ph[1] is None or self.punto_ph[2] is None:
             mostrar_aviso(self, "Calibración pH", "Lee ambos puntos antes de calcular.")
@@ -1931,6 +2028,27 @@ class CalibracionWindow(ctk.CTkToplevel):
             mostrar_error(self, "Calibración pH", "Los dos voltajes leídos son iguales, no se puede calcular la recta.")
             return
         slope, intercept = recta
+
+        if abs(slope) > self.SLOPE_SOSPECHOSO:
+            # Bloqueo duro, sin opción de "aplicar de todas formas": el
+            # firmware ahora rechaza este mismo umbral en CAL:PH (ver
+            # codigotesisV3.ino, SLOPE_SOSPECHOSO), así que dejar que la
+            # app diga "aplicado correctamente" aquí sería engañoso -- el
+            # Arduino lo rechazaría en silencio y la calibración anterior
+            # seguiría vigente sin que el usuario se entere.
+            mostrar_error(
+                self, "Slope de pH inusualmente grande",
+                f"El slope calculado es {slope:.2f} (voltajes: {self.punto_ph[1]:.4f} V vs "
+                f"{self.punto_ph[2]:.4f} V para buffers {y1}/{y2}).\n\n"
+                "Un slope tan grande normalmente significa que los dos voltajes leídos son "
+                "casi idénticos (a veces por una sola cuenta del ADC), y esto va a dejar el "
+                "pH siempre pegado en 0 o en 14 sin importar la lectura real del sensor. El "
+                "Arduino rechazaría este valor de todas formas.\n\n"
+                "Verifica que el sensor esté realmente sumergido en cada buffer, que se haya "
+                "enjuagado entre uno y otro, y que la lectura se haya estabilizado antes de "
+                "presionar 'Leer'. Luego vuelve a leer ambos puntos e intenta de nuevo."
+            )
+            return
 
         self.lbl_ph_resultado.configure(text=f"slope={slope:.6f}  intercept={intercept:.6f}")
 
@@ -1999,12 +2117,41 @@ class CalibracionWindow(ctk.CTkToplevel):
             return
 
         log_ratio = -math.log10(ratio)
-        if abs(log_ratio) < 1e-4:
+        if abs(log_ratio) < 1e-3:
             mostrar_error(self, "Calibración OD600", "La razón V/V_blanco es prácticamente 1; no hay señal suficiente para calibrar.")
             return
 
         slope = od2_conocido / log_ratio
         intercept = 0.0
+
+        # Igual que con pH: la separación de voltaje NO es suficiente para
+        # detectar una calibración inestable, porque el modelo es
+        # logarítmico. Dos voltajes que pasan el filtro de separación
+        # mínima (VOLTAJE_MIN_SEPARACION) aún pueden dar una razón V/V0
+        # muy cercana a 1 si V_blanco es grande, produciendo un slope
+        # disparado que satura el OD600 en el techo de seguridad del
+        # firmware (esto fue justo lo que causó que la gráfica se quedara
+        # pegada en el techo otra vez).
+        #
+        # Bloqueo duro, sin opción de "aplicar de todas formas": el
+        # firmware ahora rechaza este mismo umbral en CAL:OD (ver
+        # codigotesisV3.ino, SLOPE_SOSPECHOSO), así que forzarlo aquí
+        # solo terminaría en un rechazo silencioso del lado del Arduino.
+        if abs(slope) > self.SLOPE_SOSPECHOSO:
+            mostrar_error(
+                self, "Slope de OD600 inusualmente grande",
+                f"El slope calculado es {slope:.2f} (V_blanco={v0:.4f} V, muestra={v2:.4f} V, "
+                f"OD600 conocido={od2_conocido}).\n\n"
+                "Un slope tan grande normalmente significa que la razón V/V_blanco es casi 1, "
+                "es decir que el sensor casi no detectó diferencia de turbidez entre el blanco "
+                "y la muestra. Esto va a dejar el OD600 pegado en el techo de seguridad del "
+                "firmware sin importar la lectura real. El Arduino rechazaría este valor de "
+                "todas formas.\n\n"
+                "Verifica que la muestra realmente tenga biomasa suficiente y que el sensor "
+                "óptico esté limpio y bien alineado. Luego captura el blanco de nuevo e "
+                "intenta la calibración otra vez."
+            )
+            return
 
         self.lbl_od_resultado.configure(
             text=f"V_blanco={v0:.4f}V  slope={slope:.6f}  intercept={intercept:.6f}"
