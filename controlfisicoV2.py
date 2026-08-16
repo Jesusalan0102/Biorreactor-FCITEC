@@ -1340,12 +1340,17 @@ class DashboardApp(ctk.CTk):
 
         for num in nuevas_alertas:
             nombre_bomba = self.RELES_DOSIFICACION.get(num, f"Relé {num}")
+            mensaje_alerta = (
+                f"Sin flujo detectado en bomba de {nombre_bomba} (relé {num}) "
+                "después de varios segundos encendida"
+            )
             mostrar_aviso(
                 self, "Bomba sin flujo",
                 f"No se detectó flujo en la bomba de {nombre_bomba} (relé {num}) después de "
                 "varios segundos encendida.\n\nRevisa que la manguera no esté doblada, que el "
                 "reservorio no esté vacío, y que la bomba no esté atascada."
             )
+            self.registrar_evento_bd(mensaje_alerta)
 
         # Polling: pide el estado de flujo actualizado para el próximo
         # ciclo (respuesta asíncrona, la procesa hilo_lectura). Mismo
@@ -1391,13 +1396,15 @@ class DashboardApp(ctk.CTk):
                 temperatura, ph, od600,
                 rele1, rele2, rele3, rele4, rele5, rele6,
                 bomba_ph_on, bomba_iptg_on, bomba_cosecha_on,
-                sistema_funcionando
+                sistema_funcionando,
+                flujo_pulsos, flujo_litros_acum, flujo_alerta
             ) VALUES (
                 %s,
                 %s, %s, %s,
                 %s, %s, %s, %s, %s, %s,
                 %s, %s, %s,
-                %s
+                %s,
+                %s, %s, %s
             )
             """
             # Se manda la hora de Tijuana explícita (naive) para que coincida
@@ -1406,6 +1413,16 @@ class DashboardApp(ctk.CTk):
             # UTC en Clever Cloud), el dashboard web queda marcado OFFLINE
             # aunque sí lleguen datos nuevos.
             fecha_hora_tijuana = datetime.now(TZ_TIJUANA).strftime("%Y-%m-%d %H:%M:%S")
+
+            # Snapshot del estado de flujo bajo su propio lock (lo llena
+            # hilo_lectura de forma asíncrona -- ver WARNING:BOMBA_SIN_FLUJO
+            # y FLOW:PULSOS en ese método). Así el dashboard web puede
+            # mostrar lo mismo que ya ves en el LED "FLUJO" del escritorio.
+            with self.flujo_lock:
+                flujo_pulsos_snap = self.flujo_pulsos
+                flujo_litros_snap = self.flujo_litros_acum
+                flujo_alerta_snap = 1 if self.alertas_flujo else 0
+
             valores = (
                 fecha_hora_tijuana,
                 temp, ph, od600,
@@ -1418,7 +1435,8 @@ class DashboardApp(ctk.CTk):
                 int(self.bomba_ph),
                 int(self.bomba_iptg),
                 int(self.bomba_cosecha),
-                0 if self.emergencia else 1
+                0 if self.emergencia else 1,
+                flujo_pulsos_snap, flujo_litros_snap, flujo_alerta_snap
             )
             print(f"[BD] Ejecutando INSERT con valores: {valores}")
             cursor.execute(query, valores)
@@ -1599,6 +1617,29 @@ class DashboardApp(ctk.CTk):
             except Exception as e:
                 print(f"Error actualizando emergencia en BD: {e}")
                 self.db_conn = None
+
+    def registrar_evento_bd(self, mensaje):
+        """Escribe en la tabla 'eventos' -- la misma que usa monitoreoV2.py
+        (obtener_eventos) para el historial del SCADA web -- de modo que
+        una alerta de flujo detectada aquí en el escritorio también quede
+        visible para quien esté viendo el dashboard remoto."""
+        conn = self.get_db_conn()
+        if not conn:
+            print("[BD] No se pudo conectar para registrar evento")
+            return False
+        try:
+            cursor = conn.cursor()
+            fecha_hora_tijuana = datetime.now(TZ_TIJUANA).strftime("%Y-%m-%d %H:%M:%S")
+            cursor.execute(
+                "INSERT INTO eventos (hora, descripcion) VALUES (%s, %s)",
+                (fecha_hora_tijuana, mensaje)
+            )
+            conn.commit()
+            return True
+        except Exception as e:
+            print(f"[ERROR BD] No se pudo registrar evento: {e}")
+            self.db_conn = None
+            return False
 
     def chequear_emergencia_periodico(self):
         if not self.is_running:
