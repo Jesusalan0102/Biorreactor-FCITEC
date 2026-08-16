@@ -1,6 +1,5 @@
 """
 Capa de acceso a datos para el SCADA web del biorreactor.
-
 Reutiliza el mismo esquema de MySQL que ya usan monitoreoV2.py y
 controlfisicoV2.py (tablas: usuarios, datos_bioreactor, sistema_control,
 eventos). Todas las funciones de este módulo son SINCRONAS (bloqueantes)
@@ -72,12 +71,13 @@ def validar_usuario(username: str, password: str) -> bool:
 
 def obtener_estado_actual(limit: int = 20) -> dict:
     """Devuelve el paquete completo que consume el dashboard: últimas N
-    lecturas (orden cronológico ascendente), bandera de emergencia y
+    lecturas (orden cronológico ascendente), bandera de emergencia,
+    estado del sensor de flujo (pulsos/litros acumulados + si hay
+    alguna bomba de dosificación sin flujo detectado ahora mismo) y
     estado online/offline calculado con hora de Tijuana."""
     conn = conectar()
     if not conn:
         return {"ok": False, "status": "ERROR_BD", "rows": [], "emergencia": False}
-
     try:
         with conn.cursor() as cur:
             cur.execute(
@@ -88,7 +88,10 @@ def obtener_estado_actual(limit: int = 20) -> dict:
                        IFNULL(rele3, 0) AS rele3,
                        IFNULL(rele4, 0) AS rele4,
                        IFNULL(rele5, 0) AS rele5,
-                       IFNULL(rele6, 0) AS rele6
+                       IFNULL(rele6, 0) AS rele6,
+                       IFNULL(flujo_pulsos, 0) AS flujo_pulsos,
+                       IFNULL(flujo_litros_acum, 0) AS flujo_litros_acum,
+                       IFNULL(flujo_alerta, 0) AS flujo_alerta
                 FROM datos_bioreactor
                 ORDER BY fecha_hora DESC
                 LIMIT %s
@@ -101,32 +104,43 @@ def obtener_estado_actual(limit: int = 20) -> dict:
             em_row = cur.fetchone()
             emergencia = bool(em_row["emergencia"]) if em_row else False
 
-        if not rows:
-            return {"ok": True, "status": "SIN_DATOS", "rows": [], "emergencia": emergencia}
+            if not rows:
+                return {"ok": True, "status": "SIN_DATOS", "rows": [], "emergencia": emergencia}
 
-        ultimo = rows[-1]
-        fh = ultimo["fecha_hora"]
-        esta_vivo = False
-        if fh is not None:
-            if fh.tzinfo is None:
-                fh = fh.replace(tzinfo=TZ_TIJUANA)
-            esta_vivo = (ahora_tijuana() - fh).total_seconds() < VENTANA_ONLINE_SEG
-            print(f"[DEBUG TZ] fh_ajustado={fh} | ahora_tijuana={ahora_tijuana()} | "
-                  f"diff_seg={(ahora_tijuana() - fh).total_seconds()}")
+            ultimo = rows[-1]
+            fh = ultimo["fecha_hora"]
+            esta_vivo = False
+            if fh is not None:
+                if fh.tzinfo is None:
+                    fh = fh.replace(tzinfo=TZ_TIJUANA)
+                esta_vivo = (ahora_tijuana() - fh).total_seconds() < VENTANA_ONLINE_SEG
+                print(f"[DEBUG TZ] fh_ajustado={fh} | ahora_tijuana={ahora_tijuana()} | "
+                      f"diff_seg={(ahora_tijuana() - fh).total_seconds()}")
 
-        if emergencia:
-            status = "EMERGENCIA"
-        elif esta_vivo:
-            status = "ONLINE"
-        else:
-            status = "OFFLINE"
+            if emergencia:
+                status = "EMERGENCIA"
+            elif esta_vivo:
+                status = "ONLINE"
+            else:
+                status = "OFFLINE"
 
-        # Serializar fechas a ISO para JSON / websocket
-        for r in rows:
-            if r.get("fecha_hora") is not None:
-                r["fecha_hora"] = r["fecha_hora"].isoformat()
+            # Serializar fechas a ISO para JSON / websocket
+            for r in rows:
+                if r.get("fecha_hora") is not None:
+                    r["fecha_hora"] = r["fecha_hora"].isoformat()
 
-        return {"ok": True, "status": status, "rows": rows, "emergencia": emergencia}
+            # Bandera de conveniencia para el frontend: True si la última
+            # fila trae una alerta de flujo activa (evita que el
+            # dashboard tenga que inspeccionar rows[-1] por su cuenta).
+            flujo_alerta_actual = bool(ultimo.get("flujo_alerta", 0))
+
+            return {
+                "ok": True,
+                "status": status,
+                "rows": rows,
+                "emergencia": emergencia,
+                "flujo_alerta": flujo_alerta_actual,
+            }
     except Exception as e:
         print(f"[DB] Error obteniendo estado: {e}")
         return {"ok": False, "status": "ERROR_BD", "rows": [], "emergencia": False}
@@ -166,8 +180,8 @@ def registrar_evento(mensaje: str) -> bool:
                 "INSERT INTO eventos (hora, descripcion) VALUES (%s, %s)",
                 (ahora_tijuana().strftime("%Y-%m-%d %H:%M:%S"), mensaje),
             )
-        conn.commit()
-        return True
+            conn.commit()
+            return True
     except Exception as e:
         print(f"[DB] Error registrando evento: {e}")
         return False
@@ -188,8 +202,8 @@ def activar_paro() -> bool:
                        rele4 = 0, rele5 = 0, rele6 = 0
                    WHERE id = 1"""
             )
-        conn.commit()
-        return True
+            conn.commit()
+            return True
     except Exception as e:
         print(f"[DB] Error activando paro: {e}")
         return False
@@ -206,8 +220,8 @@ def reanudar_sistema() -> bool:
             cur.execute(
                 "UPDATE sistema_control SET emergencia = 0, comando_reanudar = 1 WHERE id = 1"
             )
-        conn.commit()
-        return True
+            conn.commit()
+            return True
     except Exception as e:
         print(f"[DB] Error reanudando sistema: {e}")
         return False
