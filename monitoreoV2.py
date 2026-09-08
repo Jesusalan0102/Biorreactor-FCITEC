@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 
 import pymysql
 import pymysql.cursors
+import bcrypt
 
 TZ_TIJUANA = ZoneInfo("America/Tijuana")
 
@@ -48,20 +49,45 @@ def conectar():
 
 
 def validar_usuario(username: str, password: str) -> bool:
-    """Valida contra la tabla usuarios (username/password), igual que la
-    app de escritorio. NOTA: si en el futuro migras a contraseñas
-    hasheadas (bcrypt, como ya haces en carrier-transicold), ajusta
-    aquí la comparación."""
+    """Valida contra la tabla usuarios (username + hash bcrypt).
+
+    NOTA: este módulo (monitoreoV2.py) había quedado desincronizado de
+    web/db.py, que es la copia realmente usada por el SCADA web. Aquí la
+    versión anterior comparaba la contraseña en texto plano
+    ("WHERE username=%s AND password=%s"), una regresión de seguridad
+    frente a controlfisicoV2.py y web/db.py, que ya usan bcrypt. Se
+    alinea con la misma lógica (con migración automática de filas viejas
+    en texto plano) para que no queden dos rutas de login con distinto
+    nivel de seguridad en el mismo proyecto."""
     conn = conectar()
     if not conn:
         return False
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT id FROM usuarios WHERE username = %s AND password = %s",
-                (username, password),
+                "SELECT id, password FROM usuarios WHERE username = %s",
+                (username,),
             )
-            return cur.fetchone() is not None
+            row = cur.fetchone()
+            if not row:
+                return False
+
+            stored = row["password"] or ""
+            pwd_bytes = password.encode("utf-8")
+
+            if stored.startswith(("$2a$", "$2b$", "$2y$")):
+                return bcrypt.checkpw(pwd_bytes, stored.encode("utf-8"))
+
+            # Fila vieja en texto plano: comparar directo y migrar a hash.
+            if stored == password:
+                nuevo_hash = bcrypt.hashpw(pwd_bytes, bcrypt.gensalt()).decode("utf-8")
+                cur.execute(
+                    "UPDATE usuarios SET password = %s WHERE id = %s",
+                    (nuevo_hash, row["id"]),
+                )
+                conn.commit()
+                return True
+            return False
     except Exception as e:
         print(f"[DB] Error validando usuario: {e}")
         return False
