@@ -860,12 +860,25 @@ class DashboardApp(ctk.CTk):
         self.etapa = "READY"
         self.emergencia = False
         self.pausado = False
+        # Etapa del cultivo justo antes de un paro de emergencia, para poder
+        # restaurarla al reanudar (ver paro_emergencia/reanudar). Sin esto,
+        # reanudar() reseteaba siempre a READY y se perdía el progreso de
+        # un cultivo que ya estaba en GROWING/INDUCED/HARVEST.
+        self.etapa_antes_emergencia = None
+        # Bandera "un solo aviso por evento" para la alarma de pH alto (ver
+        # controlar_actuadores_con_datos), mismo patrón que alertas_flujo.
+        self.alarma_ph_alto_activa = False
 
         # Conexión persistente a BD: se abre una sola vez y se reutiliza con
         # ping(reconnect=True) en vez de abrir/cerrar una conexión nueva en
         # cada operación (evita el error 2013 "Lost connection" por exceso
         # de aperturas de socket y reduce carga en el servidor).
         self.db_conn = None
+        # self.db_conn se comparte entre varios hilos en segundo plano (ver
+        # _en_hilo_bd más abajo): sin este lock, dos operaciones de BD
+        # podrían pisarse la conexión al mismo tiempo (p. ej. el chequeo de
+        # emergencia cada 3s y el guardado de lecturas cada 5s).
+        self.db_lock = threading.Lock()
 
         # Ids de los after() periódicos, para poder cancelarlos limpiamente
         # al cerrar el Dashboard (ver on_closing).
@@ -1178,13 +1191,26 @@ class DashboardApp(ctk.CTk):
         while self.serial and self.serial.is_open and self.is_running:
             try:
                 if self.serial.in_waiting > 0:
-                    linea = self.serial.readline().decode('ascii', errors='ignore').strip()
-                    linea = linea.replace(" ", "")  # Remove spaces for robustness
-                    print(f"[RAW recibido] {linea}")
+                    linea_original = self.serial.readline().decode('ascii', errors='ignore').strip()
+                    print(f"[RAW recibido] {linea_original}")
 
-                    if not any(c.isdigit() for c in linea) or "Bioreactor iniciado" in linea or "Formato:" in linea or "Comandos:" in linea or "Rangos seguridad" in linea or "FUERA RANGO" in linea:
+                    # OJO: este filtro de frases (con espacios) debe evaluarse
+                    # ANTES de quitar espacios. Antes se quitaban los espacios
+                    # primero y luego se buscaba "Rangos seguridad"/"FUERA
+                    # RANGO" (con espacio) en el resultado -- esas frases
+                    # jamás podían coincidir. Ahora mismo el firmware actual
+                    # tampoco emite esos mensajes, pero se deja el orden
+                    # correcto por si se reintroducen.
+                    if (not any(c.isdigit() for c in linea_original)
+                            or "Bioreactor iniciado" in linea_original
+                            or "Formato:" in linea_original
+                            or "Comandos:" in linea_original
+                            or "Rangos seguridad" in linea_original
+                            or "FUERA RANGO" in linea_original):
                         print("[IGNORADO - línea de texto/setup o mensaje de error]")
                         continue
+
+                    linea = linea_original.replace(" ", "")  # Quitar espacios para el parseo numérico
 
                     # --- Respuestas del subsistema de calibración ---
                     if linea.startswith("RAW:PH:"):
@@ -1293,8 +1319,37 @@ class DashboardApp(ctk.CTk):
                         print("[LÍNEA NO VÁLIDA - no tiene 3 partes]")
             except Exception as e:
                 print(f"[ERROR GRAVE EN LECTURA] {e}")
+                # Antes, al salir de este bucle (cable desconectado, puerto
+                # cerrado por el SO, etc.) self.serial quedaba con una
+                # referencia a un objeto muerto y la GUI seguía mostrando
+                # "conectado": los botones no se reseteaban y no había forma
+                # limpia de reconectar sin reiniciar toda la app. Ahora se
+                # agenda la limpieza en el hilo principal (aquí no es seguro
+                # tocar widgets de Tkinter, este es un hilo secundario).
+                if self.is_running:
+                    self.after(0, self._manejar_desconexion_inesperada)
                 break
             time.sleep(0.05)
+
+    def _manejar_desconexion_inesperada(self):
+        """Corre en el hilo principal (agendado desde hilo_lectura). Limpia
+        el estado de conexión y avisa al usuario, para que 'Conectar' quede
+        disponible de nuevo sin tener que reiniciar la aplicación."""
+        if not self.winfo_exists():
+            return
+        # Si self.serial ya es None fue una desconexión manual (ver
+        # desconectar()), no una pérdida real de la conexión: no hace falta
+        # avisar de nuevo.
+        habia_conexion = self.serial is not None
+        self.desconectar()
+        if habia_conexion:
+            self.lbl_falla.set_estado(True)
+            mostrar_error(
+                self, "Conexión perdida",
+                "Se perdió la comunicación con el Arduino (cable desconectado, puerto "
+                "cerrado, etc.). Verifica la conexión física y vuelve a presionar "
+                "'Conectar'."
+            )
 
     def actualizar_gui_periodica(self):
         if not self.is_running:
@@ -1307,7 +1362,7 @@ class DashboardApp(ctk.CTk):
                 self.actualizar_grafica()
                 self.lbl_ultimo.configure(text=f"T={temp:.1f} °C   pH={ph:.2f}   OD600={od600:.3f}")
 
-                self.guardar_en_bd(temp, ph, od600)
+                self._en_hilo_bd(self.guardar_en_bd, temp, ph, od600, callback=self._actualizar_led_bd)
             else:
                 print("Aún no hay datos nuevos para graficar...")
 
@@ -1350,7 +1405,7 @@ class DashboardApp(ctk.CTk):
                 "varios segundos encendida.\n\nRevisa que la manguera no esté doblada, que el "
                 "reservorio no esté vacío, y que la bomba no esté atascada."
             )
-            self.registrar_evento_bd(mensaje_alerta)
+            self._en_hilo_bd(self.registrar_evento_bd, mensaje_alerta)
 
         # Polling: pide el estado de flujo actualizado para el próximo
         # ciclo (respuesta asíncrona, la procesa hilo_lectura). Mismo
@@ -1379,14 +1434,40 @@ class DashboardApp(ctk.CTk):
                 self.db_conn = None
         return self.db_conn
 
+    def _en_hilo_bd(self, func, *args, callback=None, **kwargs):
+        """Ejecuta func(*args, **kwargs) en un hilo aparte, protegido con
+        self.db_lock, para que una BD lenta o caída (Clever Cloud, corte de
+        red, etc.) nunca congele la GUI del control físico -- antes todas
+        las operaciones de MySQL corrían síncronas dentro de callbacks de
+        Tkinter (.after()), y con connect_timeout=30 en conectar_db() un
+        problema de red podía dejar la ventana de control (incluido el
+        botón de PARO EMERGENCIA) sin responder hasta 30s, de forma
+        repetida cada 3-5s.
+
+        Si se pasa 'callback', su resultado se agenda con self.after(0, ...)
+        para que corra en el hilo principal -- ahí sí es seguro tocar
+        widgets de Tkinter. func() en sí NO debe tocar widgets directamente
+        porque corre en un hilo secundario."""
+        def _tarea():
+            resultado = None
+            try:
+                with self.db_lock:
+                    resultado = func(*args, **kwargs)
+            except Exception as e:
+                print(f"[BD hilo] Error ejecutando {getattr(func, '__name__', func)}: {e}")
+            if callback is not None and self.is_running:
+                self.after(0, lambda: callback(resultado))
+        threading.Thread(target=_tarea, daemon=True).start()
+
     def guardar_en_bd(self, temp, ph, od600):
+        """Inserta una lectura en datos_bioreactor. NO debe tocar widgets de
+        Tkinter: se ejecuta en un hilo aparte (ver _en_hilo_bd). Devuelve un
+        string de estado ('sin_conexion' | 'ok' | 'error') que el llamador
+        usa para actualizar el LED de BD desde el hilo principal."""
         conn = self.get_db_conn()
         if not conn:
             print("[BD] No se pudo conectar para guardar")
-            self.lbl_conexion_bd.configure(text="●  BD: sin conexión", text_color=COLOR_LED_ALERTA)
-            return
-        else:
-            self.lbl_conexion_bd.configure(text="●  BD: conectada", text_color=COLOR_LED_ON)
+            return "sin_conexion"
 
         try:
             cursor = conn.cursor()
@@ -1442,17 +1523,77 @@ class DashboardApp(ctk.CTk):
             cursor.execute(query, valores)
             conn.commit()
             print(f"[BD] Guardado OK - filas afectadas: {cursor.rowcount}")
+            return "ok"
         except Exception as e:
             print(f"[ERROR BD Guardado] Tipo: {type(e).__name__}")
             print(f"[ERROR BD Guardado] Mensaje: {str(e)}")
             import traceback
             traceback.print_exc()
-            self.lbl_conexion_bd.configure(text="●  BD: error al guardar", text_color=COLOR_LED_ALERTA)
             # Se invalida la conexión para forzar una reconexión limpia en el
             # próximo ciclo, en vez de seguir usando un socket ya roto.
             self.db_conn = None
+            return "error"
+
+    def _actualizar_led_bd(self, status):
+        """Callback de guardar_en_bd() (ver _en_hilo_bd): esta sí corre en
+        el hilo principal de Tkinter, así que es segura para tocar el
+        label."""
+        if not self.winfo_exists():
+            return
+        if status == "ok":
+            self.lbl_conexion_bd.configure(text="●  BD: conectada", text_color=COLOR_LED_ON)
+        elif status == "sin_conexion":
+            self.lbl_conexion_bd.configure(text="●  BD: sin conexión", text_color=COLOR_LED_ALERTA)
+        elif status == "error":
+            self.lbl_conexion_bd.configure(text="●  BD: error al guardar", text_color=COLOR_LED_ALERTA)
 
     def controlar_actuadores_con_datos(self, temp, ph, od600):
+        # --- Corte de seguridad por sobre-temperatura ---
+        # Antes, rango_control['temperatura']['max'] estaba definido pero
+        # jamás se leía en ningún lado: el control normal solo apaga la
+        # calefacción con la histéresis alrededor de 'min', así que un
+        # relé de calefacción pegado en ON (o un sensor desconectado que
+        # ya no refleja la temperatura real) no tenía ninguna capa
+        # adicional de protección. Esto dispara un paro de emergencia
+        # automático si la temperatura supera el máximo configurado, sin
+        # depender de que un humano esté mirando la pantalla.
+        temp_max = self.rango_control['temperatura']['max']
+        if temp > temp_max and not self.emergencia:
+            print(f"[ALARMA] Temperatura {temp:.1f}°C supera el máximo de seguridad ({temp_max}°C) → paro automático")
+            # Primero la acción física (apagar relés por serial, es local y
+            # rápida) y solo después el registro en BD (en hilo aparte, para
+            # que una BD lenta nunca retrase el corte de seguridad).
+            self.paro_emergencia()
+            self._en_hilo_bd(
+                self.registrar_evento_bd,
+                f"ALARMA: sobre-temperatura ({temp:.1f}°C > {temp_max}°C) - paro de emergencia automático"
+            )
+            mostrar_aviso(
+                self, "Sobre-temperatura",
+                f"Temperatura de {temp:.1f}°C superó el máximo de seguridad ({temp_max}°C).\n\n"
+                "Se activó el paro de emergencia automáticamente. Revisa el relé de "
+                "calefacción y el sensor antes de reanudar."
+            )
+            return
+
+        # --- Alarma por pH fuera de rango alto ---
+        # El control solo dosifica base (NaOH) cuando el pH baja del
+        # mínimo; no existe bomba de ácido, así que un pH por encima del
+        # máximo configurado no se puede corregir automáticamente. Antes
+        # esto pasaba completamente inadvertido (rango_control['ph']['max']
+        # tampoco se usaba). Aquí al menos se registra una alarma (una sola
+        # vez por evento, no en cada ciclo) para que quede visible en el
+        # historial de eventos que también ve el SCADA web.
+        ph_max = self.rango_control['ph']['max']
+        if ph > ph_max:
+            if not self.alarma_ph_alto_activa:
+                self.alarma_ph_alto_activa = True
+                mensaje = f"ALARMA: pH alto ({ph:.2f} > {ph_max}) - no hay dosificación de ácido automática"
+                print(f"[ALARMA] {mensaje}")
+                self._en_hilo_bd(self.registrar_evento_bd, mensaje)
+        else:
+            self.alarma_ph_alto_activa = False
+
         if self.emergencia or self.pausado:
             return
 
@@ -1551,6 +1692,12 @@ class DashboardApp(ctk.CTk):
 
     def paro_emergencia(self):
         print("Ejecutando paro de emergencia...")
+        # Solo se sobrescribe la etapa recordada si no veníamos ya de una
+        # emergencia (evita que una segunda llamada a paro_emergencia
+        # mientras ya estamos en "EMERGENCIA" borre el valor guardado con
+        # "EMERGENCIA" mismo).
+        if self.etapa != "EMERGENCIA":
+            self.etapa_antes_emergencia = self.etapa
         self.emergencia = True
         self.etapa = "EMERGENCIA"
         self.lbl_emergencia.set_estado(True)
@@ -1567,20 +1714,34 @@ class DashboardApp(ctk.CTk):
         if self.serial:
             self._enviar_estado_reles()
             print("Comandos OFF enviados al Arduino")
-        self.actualizar_emergencia_bd(1)
+        self._en_hilo_bd(self.actualizar_emergencia_bd, 1)
         self.btn_reanudar.configure(state="normal")
         mostrar_aviso(self, "EMERGENCIA", "Paro de emergencia activado - todos los relés OFF")
 
     def reanudar(self):
         print("Ejecutando reanudación completa...")
         self.emergencia = False
-        self.etapa = "READY"
+        # Se restaura la etapa en la que estaba el cultivo antes del paro
+        # (GROWING/INDUCED/HARVEST/READY), en vez de forzar siempre READY.
+        # Antes, forzar READY hacía que el siguiente ciclo de
+        # controlar_actuadores_con_datos() (a los 5s) volviera a apagar
+        # agitador/aireación, porque ese método apaga los relés 5 y 6 salvo
+        # que la etapa esté en {GROWING, INDUCED, HARVEST} -- y además se
+        # perdía el progreso del cultivo (inducción/cosecha ya alcanzadas).
+        self.etapa = self.etapa_antes_emergencia or "READY"
+        self.etapa_antes_emergencia = None
         self.pausado = False
         self.lbl_emergencia.set_estado(False)
 
-        # Reactivar sistemas esenciales
-        self.rele_estados[5] = True   # agitador siempre ON en cultivo
-        self.rele_estados[6] = True   # aireación siempre ON en cultivo
+        # Reactivar sistemas esenciales solo si corresponde a la etapa
+        # restaurada (si volvemos a READY, agitador/aireación deben quedar
+        # apagados hasta que se presione "Iniciar Cultivo" de nuevo).
+        if self.etapa in ("GROWING", "INDUCED", "HARVEST"):
+            self.rele_estados[5] = True   # agitador siempre ON en cultivo
+            self.rele_estados[6] = True   # aireación siempre ON en cultivo
+        else:
+            self.rele_estados[5] = False
+            self.rele_estados[6] = False
 
         # Reactivar calefacción si temperatura está baja
         if self.ultimos_datos:
@@ -1601,9 +1762,10 @@ class DashboardApp(ctk.CTk):
         else:
             print("No hay conexión serial abierta para reanudar")
 
-        self.actualizar_emergencia_bd(0)
+        self.lbl_etapa.configure(text=f"ETAPA: {self.etapa}")
+        self._en_hilo_bd(self.actualizar_emergencia_bd, 0)
         self.btn_reanudar.configure(state="disabled")
-        mostrar_info(self, "Sistema", "Sistema reanudado completamente - relés reactivados")
+        mostrar_info(self, "Sistema", f"Sistema reanudado completamente - etapa restaurada a {self.etapa}")
 
     def actualizar_emergencia_bd(self, estado):
         conn = self.get_db_conn()
@@ -1642,36 +1804,67 @@ class DashboardApp(ctk.CTk):
             return False
 
     def chequear_emergencia_periodico(self):
+        """Antes esta función hacía la consulta a MySQL directo en el hilo
+        de la GUI cada 3s; si la BD se ponía lenta o caía, el DASHBOARD
+        completo (incluido el botón de PARO EMERGENCIA local) se quedaba
+        congelado hasta por 30s (connect_timeout de conectar_db). Ahora la
+        consulta corre en un hilo aparte y solo el resultado se procesa en
+        el hilo principal (ver _procesar_estado_control), que es donde sí
+        es seguro llamar paro_emergencia()/reanudar() porque tocan widgets."""
         if not self.is_running:
             return
 
-        print("Chequeando BD para emergencia/reanudar (cada 3s)...")
-        conn = self.get_db_conn()
-        if conn:
-            try:
-                cursor = conn.cursor()
-                cursor.execute("SELECT emergencia, comando_reanudar FROM sistema_control WHERE id = 1")
-                result = cursor.fetchone()
-                if result:
-                    emerg, cmd_reanudar = result
-                    print(f"Estado BD → emergencia: {emerg}, comando_reanudar: {cmd_reanudar}")
-                    if emerg == 1 and not self.emergencia:
-                        print("→ Detectado emergencia en BD → paro local")
-                        self.paro_emergencia()
-                    elif cmd_reanudar == 1 and self.emergencia:
-                        print("→ Detectado comando reanudar → ejecutando reanudación")
-                        self.reanudar()
-                        cursor.execute("UPDATE sistema_control SET comando_reanudar = 0 WHERE id = 1")
-                        conn.commit()
-                        print("Flag reanudar reseteado en BD")
-            except Exception as e:
-                print(f"Error al chequear BD: {e}")
-                self.db_conn = None
-        else:
-            print("No se pudo conectar a BD para chequeo")
+        self._en_hilo_bd(self._consultar_estado_control, callback=self._procesar_estado_control)
 
         if self.is_running:
             self._after_ids['emergencia'] = self.after(3000, self.chequear_emergencia_periodico)
+
+    def _consultar_estado_control(self):
+        """Corre en un hilo aparte (ver _en_hilo_bd). No debe tocar widgets
+        ni cambiar self.emergencia directamente -- solo lee y devuelve."""
+        print("Chequeando BD para emergencia/reanudar (cada 3s)...")
+        conn = self.get_db_conn()
+        if not conn:
+            print("No se pudo conectar a BD para chequeo")
+            return None
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT emergencia, comando_reanudar FROM sistema_control WHERE id = 1")
+            return cursor.fetchone()
+        except Exception as e:
+            print(f"Error al chequear BD: {e}")
+            self.db_conn = None
+            return None
+
+    def _procesar_estado_control(self, result):
+        """Callback ejecutado en el hilo principal de Tkinter (ver
+        _en_hilo_bd) con el resultado de _consultar_estado_control."""
+        if not result or not self.winfo_exists():
+            return
+        emerg, cmd_reanudar = result
+        print(f"Estado BD → emergencia: {emerg}, comando_reanudar: {cmd_reanudar}")
+        if emerg == 1 and not self.emergencia:
+            print("→ Detectado emergencia en BD → paro local")
+            self.paro_emergencia()
+        elif cmd_reanudar == 1 and self.emergencia:
+            print("→ Detectado comando reanudar → ejecutando reanudación")
+            self.reanudar()
+            self._en_hilo_bd(self._resetear_comando_reanudar)
+
+    def _resetear_comando_reanudar(self):
+        """Corre en un hilo aparte: limpia la bandera comando_reanudar en
+        BD tras procesar una reanudación remota."""
+        conn = self.get_db_conn()
+        if not conn:
+            return
+        try:
+            cursor = conn.cursor()
+            cursor.execute("UPDATE sistema_control SET comando_reanudar = 0 WHERE id = 1")
+            conn.commit()
+            print("Flag reanudar reseteado en BD")
+        except Exception as e:
+            print(f"Error al resetear comando_reanudar: {e}")
+            self.db_conn = None
 
     # ---------------- Calibración de sensores ----------------
 
