@@ -936,6 +936,72 @@ class DashboardApp(ctk.CTk):
         }
         self.histeresis = {'temperatura': 0.5, 'ph': 0.2}
 
+        # ---------------------------------------------------------------
+        # Parámetros de proceso alineados al paper de referencia
+        # (Marinescu & Popescu, 2018, "Open-Source bioreactor controller
+        # for bacterial protein expression", PeerJ Preprints):
+        #
+        #  - Dosificación de pH (OH Pump): en vez de un simple ON/OFF por
+        #    histéresis, el paper dosifica pulsos de volumen fijo de NaOH
+        #    con una espera entre pulsos (~60s) y, si el pH sigue bajo el
+        #    mínimo tras N pulsos seguidos sin recuperarse, DUPLICA el
+        #    volumen del pulso (respuesta adaptativa a alta demanda).
+        #  - IPTG: se dosifica una sola vez (bolo), calculando el tiempo
+        #    de bombeo necesario para llegar a la concentración final
+        #    deseada en el cultivo, NO se deja la bomba encendida todo el
+        #    tramo de inducción.
+        #  - Cosecha: la bomba corre un tiempo calculado a partir del
+        #    volumen de cultivo y el flujo de la bomba, y se apaga sola al
+        #    terminar (etapa "DONE"), en vez de quedar encendida para
+        #    siempre.
+        #
+        # IMPORTANTE: los flujo_bomba_ml_s de abajo son valores de partida
+        # tomados como referencia del paper (unidades convertidas a mL/s);
+        # DEBEN calibrarse con el flujo real de cada bomba física para que
+        # los tiempos/volúmenes calculados sean correctos. Sin calibrar,
+        # el comportamiento sigue siendo funcional (las bombas se siguen
+        # encendiendo/apagando en el momento correcto), pero el volumen
+        # exacto dosificado y registrado en BD puede no ser preciso.
+        # ---------------------------------------------------------------
+        self.ph_dosificacion = {
+            'volumen_base_ml': 0.5,        # OH_DROP_VOLUME inicial (mL)
+            'flujo_bomba_ml_s': 0.438,      # OH_FLOW de referencia del paper (438 µL/s) -- CALIBRAR
+            'espera_entre_dosis_s': 60,      # OH_ON_OFF_MILISEC del paper (1 min)
+            'dosis_para_duplicar': 10,       # tras 10 dosis seguidas sin recuperar el pH, se duplica
+        }
+        self._ph_estado = {
+            'volumen_actual_ml': self.ph_dosificacion['volumen_base_ml'],
+            'dosis_consecutivas': 0,
+            'bombeando': False,
+            'inicio_bombeo': None,
+            'ultimo_fin_bombeo': None,
+            'total_naoh_ml': 0.0,
+        }
+
+        self.iptg_dosificacion = {
+            'volumen_cultivo_ml': 500,       # volumen de cultivo en el biorreactor (paper: 0.5 L)
+            'concentracion_stock_mM': 1000,   # concentración del stock de IPTG (típico 1 M) -- AJUSTAR
+            'concentracion_final_mM': 1,      # concentración final deseada (paper: 1 mM)
+            'flujo_bomba_ml_s': 0.417,        # flujo de la bomba de IPTG -- CALIBRAR
+        }
+        self._iptg_estado = {
+            'bombeando': False,
+            'inicio_bombeo': None,
+            'duracion_s': None,
+            'completado': False,
+            'pausado_desde': None,  # timestamp si un paro de emergencia interrumpió el bolo
+        }
+
+        self.cosecha_dosificacion = {
+            'volumen_cultivo_ml': 500,        # mismo volumen de cultivo
+            'flujo_bomba_ml_s': 0.417,        # flujo de la bomba de cosecha -- CALIBRAR
+        }
+        self._cosecha_estado = {
+            'inicio_bombeo': None,
+            'duracion_s': None,
+            'pausado_desde': None,  # timestamp si un paro de emergencia interrumpió la cosecha
+        }
+
         self.is_running = True
 
         self.construir_ui()
@@ -1602,20 +1668,20 @@ class DashboardApp(ctk.CTk):
         elif temp > self.rango_control['temperatura']['min'] + self.histeresis['temperatura']:
             self.rele_estados[1] = False
 
-        if ph < self.rango_control['ph']['min']:
-            self.bomba_ph = True
-        elif ph > self.rango_control['ph']['min'] + self.histeresis['ph']:
-            self.bomba_ph = False
+        self._gestionar_ph_dosificacion(ph)
 
         if self.etapa == "GROWING" and od600 >= self.rango_control['od600_induccion']:
-            self.bomba_iptg = True
             self.etapa = "INDUCED"
-            self.lbl_etapa.configure(text="ETAPA: INDUCED")
+            self._iniciar_dosis_iptg()
 
-        if self.etapa == "INDUCED" and od600 >= self.rango_control['od600_cosecha']:
-            self.bomba_cosecha = True
-            self.etapa = "HARVEST"
-            self.lbl_etapa.configure(text="ETAPA: HARVEST")
+        if self.etapa == "INDUCED":
+            self._gestionar_iptg_dosificacion()
+            if od600 >= self.rango_control['od600_cosecha']:
+                self.etapa = "HARVEST"
+                self._iniciar_cosecha()
+
+        if self.etapa == "HARVEST":
+            self._gestionar_cosecha_dosificacion()
 
         if self.etapa in ["GROWING", "INDUCED", "HARVEST"]:
             self.rele_estados[5] = True
@@ -1633,9 +1699,122 @@ class DashboardApp(ctk.CTk):
         self.rele_estados[4] = self.bomba_cosecha
 
         self.lbl_etapa.configure(text=f"ETAPA: {self.etapa}")
-        self.lbl_reles.configure(text=f"Relés: {self.rele_estados} | Bombas: pH={self.bomba_ph}, IPTG={self.bomba_iptg}, Cosecha={self.bomba_cosecha}")
+        self.lbl_reles.configure(
+            text=f"Relés: {self.rele_estados} | Bombas: pH={self.bomba_ph}, IPTG={self.bomba_iptg}, "
+                 f"Cosecha={self.bomba_cosecha} | NaOH total: {self._ph_estado['total_naoh_ml']:.2f} mL"
+        )
 
         self._enviar_estado_reles()
+
+    def _gestionar_ph_dosificacion(self, ph):
+        """Dosificación de base (NaOH) por pulsos, con volumen que se
+        duplica si el pH no se recupera tras varios pulsos seguidos --
+        mismo algoritmo adaptativo descrito en el paper de referencia
+        (sección pH). No usa bloqueo (time.sleep); se apoya en
+        timestamps, igual que el resto del control no-bloqueante."""
+        estado = self._ph_estado
+        ahora = time.time()
+        cfg = self.ph_dosificacion
+
+        if estado['bombeando']:
+            duracion = estado['volumen_actual_ml'] / cfg['flujo_bomba_ml_s']
+            if ahora - estado['inicio_bombeo'] >= duracion:
+                # Termina el pulso actual.
+                self.bomba_ph = False
+                estado['bombeando'] = False
+                estado['ultimo_fin_bombeo'] = ahora
+                estado['total_naoh_ml'] += estado['volumen_actual_ml']
+                estado['dosis_consecutivas'] += 1
+                print(f"[pH] Pulso de NaOH completado: {estado['volumen_actual_ml']:.2f} mL "
+                      f"(total acumulado: {estado['total_naoh_ml']:.2f} mL)")
+                if estado['dosis_consecutivas'] >= cfg['dosis_para_duplicar']:
+                    estado['volumen_actual_ml'] *= 2
+                    estado['dosis_consecutivas'] = 0
+                    print(f"[pH] pH no se recuperó tras {cfg['dosis_para_duplicar']} pulsos seguidos "
+                          f"→ se duplica el volumen del próximo pulso a {estado['volumen_actual_ml']:.2f} mL")
+            return  # mientras bombea, no se evalúa nada más este ciclo
+
+        if ph >= self.rango_control['ph']['min'] + self.histeresis['ph']:
+            # pH recuperado: se reinicia el conteo y el volumen del pulso
+            # vuelve al valor base para el próximo evento de acidificación.
+            if estado['dosis_consecutivas'] > 0 or estado['volumen_actual_ml'] != cfg['volumen_base_ml']:
+                print("[pH] pH recuperado, reiniciando dosificación adaptativa")
+            estado['dosis_consecutivas'] = 0
+            estado['volumen_actual_ml'] = cfg['volumen_base_ml']
+            return
+
+        if ph < self.rango_control['ph']['min']:
+            espera_cumplida = (
+                estado['ultimo_fin_bombeo'] is None
+                or (ahora - estado['ultimo_fin_bombeo']) >= cfg['espera_entre_dosis_s']
+            )
+            if espera_cumplida:
+                self.bomba_ph = True
+                estado['bombeando'] = True
+                estado['inicio_bombeo'] = ahora
+                print(f"[pH] pH bajo ({ph:.2f}) → iniciando pulso de {estado['volumen_actual_ml']:.2f} mL de NaOH")
+
+    def _iniciar_dosis_iptg(self):
+        """Calcula el tiempo de bombeo de IPTG necesario para alcanzar la
+        concentración final deseada en el cultivo (dosis única / bolo, no
+        continua) y arranca la bomba. Duración = volumen_necesario / flujo,
+        donde volumen_necesario = volumen_cultivo * conc_final / conc_stock."""
+        cfg = self.iptg_dosificacion
+        volumen_necesario_ml = (
+            cfg['volumen_cultivo_ml'] * cfg['concentracion_final_mM'] / cfg['concentracion_stock_mM']
+        )
+        duracion_s = volumen_necesario_ml / cfg['flujo_bomba_ml_s']
+        self._iptg_estado['bombeando'] = True
+        self._iptg_estado['inicio_bombeo'] = time.time()
+        self._iptg_estado['duracion_s'] = duracion_s
+        self._iptg_estado['completado'] = False
+        self.bomba_iptg = True
+        mensaje = (
+            f"Inducción iniciada: dosificando {volumen_necesario_ml:.2f} mL de IPTG "
+            f"({duracion_s:.1f}s de bombeo) para alcanzar {cfg['concentracion_final_mM']} mM"
+        )
+        print(f"[IPTG] {mensaje}")
+        self._en_hilo_bd(self.registrar_evento_bd, mensaje)
+
+    def _gestionar_iptg_dosificacion(self):
+        """Apaga la bomba de IPTG sola cuando se cumple el tiempo de bolo
+        calculado en _iniciar_dosis_iptg -- antes la bomba se quedaba
+        encendida indefinidamente hasta la cosecha."""
+        estado = self._iptg_estado
+        if not estado['bombeando']:
+            return
+        if time.time() - estado['inicio_bombeo'] >= estado['duracion_s']:
+            self.bomba_iptg = False
+            estado['bombeando'] = False
+            estado['completado'] = True
+            print("[IPTG] Dosis de inducción completada, bomba apagada")
+            self._en_hilo_bd(self.registrar_evento_bd, "Dosis de IPTG completada")
+
+    def _iniciar_cosecha(self):
+        """Calcula el tiempo de bombeo de cosecha a partir del volumen de
+        cultivo y el flujo de la bomba (igual que HARVEST_MINUTES en el
+        paper) y arranca la bomba de cosecha."""
+        cfg = self.cosecha_dosificacion
+        duracion_s = cfg['volumen_cultivo_ml'] / cfg['flujo_bomba_ml_s']
+        self._cosecha_estado['inicio_bombeo'] = time.time()
+        self._cosecha_estado['duracion_s'] = duracion_s
+        self.bomba_cosecha = True
+        mensaje = f"Cosecha iniciada: {duracion_s/60:.1f} min de bombeo estimados"
+        print(f"[Cosecha] {mensaje}")
+        self._en_hilo_bd(self.registrar_evento_bd, mensaje)
+
+    def _gestionar_cosecha_dosificacion(self):
+        """Apaga la bomba de cosecha sola cuando se cumple el tiempo
+        calculado y pasa la etapa a DONE -- antes la bomba de cosecha se
+        quedaba encendida para siempre tras alcanzar el OD de cosecha."""
+        estado = self._cosecha_estado
+        if estado['inicio_bombeo'] is None:
+            return
+        if time.time() - estado['inicio_bombeo'] >= estado['duracion_s']:
+            self.bomba_cosecha = False
+            self.etapa = "DONE"
+            print("[Cosecha] Cosecha completada, bomba apagada. Etapa → DONE")
+            self._en_hilo_bd(self.registrar_evento_bd, "Cosecha completada - cultivo listo (etapa DONE)")
 
     def _enviar_estado_reles(self):
         """Envía el estado de los 6 relés al Arduino en un solo paso."""
@@ -1688,6 +1867,26 @@ class DashboardApp(ctk.CTk):
         if self.etapa == "READY":
             self.etapa = "GROWING"
             self.lbl_etapa.configure(text="ETAPA: GROWING")
+            # Reset de los trackers de dosificación por si esta ventana ya
+            # corrió un cultivo anterior en la misma sesión (sin esto, un
+            # segundo cultivo heredaría el volumen de pulso de pH ya
+            # duplicado, el total de NaOH acumulado, o un bolo de
+            # IPTG/cosecha marcado como "completado" del cultivo previo).
+            self._ph_estado.update({
+                'volumen_actual_ml': self.ph_dosificacion['volumen_base_ml'],
+                'dosis_consecutivas': 0,
+                'bombeando': False,
+                'inicio_bombeo': None,
+                'ultimo_fin_bombeo': None,
+                'total_naoh_ml': 0.0,
+            })
+            self._iptg_estado.update({
+                'bombeando': False, 'inicio_bombeo': None,
+                'duracion_s': None, 'completado': False, 'pausado_desde': None,
+            })
+            self._cosecha_estado.update({
+                'inicio_bombeo': None, 'duracion_s': None, 'pausado_desde': None,
+            })
             mostrar_info(self, "Cultivo", "Cultivo iniciado - agitación y aeración activadas (relés 5 y 6 ON)")
 
     def paro_emergencia(self):
@@ -1710,6 +1909,19 @@ class DashboardApp(ctk.CTk):
         self.bomba_ph = False
         self.bomba_iptg = False
         self.bomba_cosecha = False
+
+        # Pausar dosificaciones de bolo en curso (IPTG/cosecha) en vez de
+        # dejar correr su cronómetro interno durante la emergencia -- sin
+        # esto, al reanudar se habría contado el tiempo en pausa como si
+        # se hubiera estado bombeando, dando por completada una dosis que
+        # en realidad nunca se terminó de aplicar. Un pulso de pH en
+        # curso simplemente se cancela (son pulsos de pocos segundos, se
+        # reintenta solo en el próximo ciclo, bajo riesgo).
+        self._ph_estado['bombeando'] = False
+        if self._iptg_estado['bombeando'] and self._iptg_estado['pausado_desde'] is None:
+            self._iptg_estado['pausado_desde'] = time.time()
+        if self._cosecha_estado['inicio_bombeo'] is not None and self._cosecha_estado['pausado_desde'] is None:
+            self._cosecha_estado['pausado_desde'] = time.time()
 
         if self.serial:
             self._enviar_estado_reles()
@@ -1749,6 +1961,25 @@ class DashboardApp(ctk.CTk):
             if temp < self.rango_control['temperatura']['min']:
                 self.rele_estados[1] = True
                 print("Reactivando calefacción por temperatura baja")
+
+        # Reactivar dosis de IPTG/cosecha que quedaron a mitad de bolo al
+        # entrar en emergencia: se corre el inicio_bombeo hacia adelante
+        # por el tiempo que estuvo en pausa, así el tiempo restante de
+        # bombeo se calcula correctamente (ni se pierde progreso ni se
+        # cuenta el tiempo pausado como si se hubiera estado bombeando).
+        ahora = time.time()
+        if self._iptg_estado['bombeando'] and self._iptg_estado['pausado_desde']:
+            pausa = ahora - self._iptg_estado['pausado_desde']
+            self._iptg_estado['inicio_bombeo'] += pausa
+            self._iptg_estado['pausado_desde'] = None
+            self.bomba_iptg = True
+            print(f"[IPTG] Reanudando bolo interrumpido (pausado {pausa:.1f}s)")
+        if self._cosecha_estado['inicio_bombeo'] is not None and self._cosecha_estado['pausado_desde']:
+            pausa = ahora - self._cosecha_estado['pausado_desde']
+            self._cosecha_estado['inicio_bombeo'] += pausa
+            self._cosecha_estado['pausado_desde'] = None
+            self.bomba_cosecha = True
+            print(f"[Cosecha] Reanudando bombeo interrumpido (pausado {pausa:.1f}s)")
 
         # Las bombas también viven en rele_estados (ver controlar_actuadores_con_datos)
         self.rele_estados[2] = self.bomba_ph
