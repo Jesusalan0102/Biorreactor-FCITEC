@@ -35,6 +35,10 @@ async def _tarea_limpieza_periodica():
         await asyncio.sleep(SEGUNDOS_ENTRE_LIMPIEZAS)
 
 
+if not os.environ.get("SESSION_SECRET"):
+    print("[ADVERTENCIA] SESSION_SECRET no definida: usando clave por defecto "
+          "(insegura). Defínela en las variables de entorno.")
+
 app = FastAPI(title="SCADA Biorreactor Web")
 
 
@@ -48,6 +52,8 @@ app.add_middleware(
     secret_key=os.environ.get("SESSION_SECRET", "cambia-esta-clave-en-produccion"),
     session_cookie="scada_session",
     max_age=60 * 60 * 8,  # 8 horas
+    same_site="lax",
+    https_only=bool(os.environ.get("RENDER")),  # Render define RENDER=true
 )
 
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
