@@ -38,5 +38,39 @@
   <line id="pid-line-rele4a" x1="320" y1="270" x2="420" y2="280" stroke="#555555" stroke-width="2"/>
   <line id="pid-line-rele4b" x1="445" y1="292.5" x2="475" y2="327.5" stroke="#555555" stroke-width="2"/>
   <circle id="pid-bottle" cx="475" cy="345" r="17.5" fill="#2c3e50" stroke="#ffffff"/>
+
+  <!-- Instrumentos (ISA): pH, temperatura, OD600 y flujo. OD600 va SUMERGIDO: no hay bomba de OD. -->
+  <g font-family="sans-serif" text-anchor="middle">
+    <!-- pH: AIT-101 -->
+    <line x1="133" y1="232" x2="180" y2="232" stroke="#8fa3bb" stroke-width="1.5" stroke-dasharray="4 3"/>
+    <polyline points="180,232 208,232 208,318" fill="none" stroke="#8fa3bb" stroke-width="2"/>
+    <circle cx="208" cy="322" r="4" fill="#e9c46a" stroke="#ffffff"/>
+    <circle cx="120" cy="232" r="13" fill="#1b2433" stroke="#ffffff" stroke-width="1.5"/>
+    <text x="120" y="235" fill="#ffffff" font-size="8" font-weight="bold">pH</text>
+    <text id="pid-val-ph" x="120" y="257" fill="#2ECC71" font-size="9" font-weight="bold">--</text>
+    <text x="120" y="270" fill="#cbd5e1" font-size="7" font-weight="bold">AIT-101 pH</text>
+    <!-- Temperatura: TIT-101 -->
+    <line x1="133" y1="345" x2="180" y2="345" stroke="#8fa3bb" stroke-width="1.5" stroke-dasharray="4 3"/>
+    <line x1="180" y1="345" x2="215" y2="345" stroke="#8fa3bb" stroke-width="2"/>
+    <circle cx="215" cy="345" r="4" fill="#e76f51" stroke="#ffffff"/>
+    <circle cx="120" cy="345" r="13" fill="#1b2433" stroke="#ffffff" stroke-width="1.5"/>
+    <text x="120" y="348" fill="#ffffff" font-size="8" font-weight="bold">T</text>
+    <text id="pid-val-temp" x="120" y="370" fill="#2ECC71" font-size="9" font-weight="bold">--</text>
+    <text x="120" y="383" fill="#cbd5e1" font-size="7" font-weight="bold">TIT-101 TEMP</text>
+    <!-- OD600: AIT-102 (LED 600 nm + fototransistor) -->
+    <line x1="307" y1="215" x2="352" y2="215" stroke="#8fa3bb" stroke-width="1.5" stroke-dasharray="4 3"/>
+    <rect x="280" y="207" width="8" height="16" fill="#f4a261" stroke="#ffffff"/>
+    <rect x="298" y="207" width="8" height="16" fill="#a8dadc" stroke="#ffffff"/>
+    <line x1="288" y1="215" x2="298" y2="215" stroke="#f4a261" stroke-dasharray="2 2"/>
+    <circle cx="365" cy="215" r="13" fill="#1b2433" stroke="#ffffff" stroke-width="1.5"/>
+    <text x="365" y="218" fill="#ffffff" font-size="8" font-weight="bold">OD</text>
+    <text id="pid-val-od" x="365" y="240" fill="#2ECC71" font-size="9" font-weight="bold">--</text>
+    <text x="365" y="253" fill="#cbd5e1" font-size="7" font-weight="bold">AIT-102 OD600</text>
+    <!-- Flujo: FIT-101 (FL1) sobre la línea de dosificación -->
+    <circle id="pid-flow" cx="371" cy="275" r="13" fill="#1b2433" stroke="#ffffff" stroke-width="1.5"/>
+    <text x="371" y="278" fill="#ffffff" font-size="8" font-weight="bold">F</text>
+    <text id="pid-val-flujo" x="371" y="300" fill="#cbd5e1" font-size="9" font-weight="bold">--</text>
+    <text x="371" y="313" fill="#cbd5e1" font-size="7" font-weight="bold">FIT-101 FLUJO</text>
+  </g>
   <text x="475" y="377" text-anchor="middle" fill="#ffffff" font-size="9">10°C</text>
 </svg>

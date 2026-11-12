@@ -127,7 +127,7 @@ function conectarWS() {
         updatePID({
           rele1: !!u.rele1, rele2: !!u.rele2, rele3: !!u.rele3,
           rele4: !!u.rele4, rele5: !!u.rele5, rele6: !!u.rele6,
-        });
+        }, { temp: u.temperatura, ph: u.ph, od: u.od600 });
         actualizarCharts(estado.rows);
       } else {
         dibujarGaugesVacios();

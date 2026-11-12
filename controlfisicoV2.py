@@ -795,6 +795,45 @@ class PIDDiagram(ctk.CTkFrame):
         c.create_oval(457, 330, 493, 366, outline="#ffffff", fill="#2c3e50", width=1.5)
         c.create_text(475, 378, text="V-101", fill=COLOR_TEXTO_SUAVE, font=(FUENTE, 8, "bold"))
 
+        # ── Instrumentos (sensores): pH, OD600, temperatura y flujo ──────────────────────────
+        # Notación ISA: AIT = analizador/transmisor, TIT = temperatura, FIT = flujo.
+        # No hay "bomba de OD": el OD600 se mide con el sensor SUMERGIDO (el paper también lo
+        # permite y es su opción preferida), así que no hace falta bombear muestra por un sensor.
+        sensor_fill = "#1b2433"
+        txt = COLOR_TEXTO_SUAVE
+
+        def instrumento(cx, cy, letra, tag):
+            c.create_oval(cx - 13, cy - 13, cx + 13, cy + 13, outline="#ffffff", fill=sensor_fill, width=1.5)
+            c.create_text(cx, cy, text=letra, fill="#ffffff", font=(FUENTE, 8, "bold"))
+            valor = c.create_text(cx, cy + 25, text="--", fill=COLOR_LED_ON, font=(FUENTE, 9, "bold"))
+            c.create_text(cx, cy + 38, text=tag, fill=txt, font=(FUENTE, 7, "bold"))
+            return valor
+
+        # pH (AIT-101): sonda sumergida, entra por la pared izquierda
+        c.create_line(133, 232, 180, 232, fill="#8fa3bb", width=1.5, dash=(4, 3))
+        c.create_line(180, 232, 208, 232, 208, 318, fill="#8fa3bb", width=2)
+        c.create_oval(204, 318, 212, 326, outline="#ffffff", fill="#e9c46a")
+        self.val_ph = instrumento(120, 232, "pH", "AIT-101 pH")
+
+        # Temperatura (TIT-101): sonda DS18B20 sumergida, entra por la pared izquierda (abajo)
+        c.create_line(133, 345, 180, 345, fill="#8fa3bb", width=1.5, dash=(4, 3))
+        c.create_line(180, 345, 215, 345, fill="#8fa3bb", width=2)
+        c.create_oval(211, 341, 219, 349, outline="#ffffff", fill="#e76f51")
+        self.val_temp = instrumento(120, 345, "T", "TIT-101 TEMP")
+
+        # OD600 (AIT-102): sensor óptico sumergido (LED 600 nm + fototransistor), pared derecha
+        c.create_line(307, 215, 320, 215, 352, 215, fill="#8fa3bb", width=1.5, dash=(4, 3))
+        c.create_rectangle(280, 207, 288, 223, outline="#ffffff", fill="#f4a261")   # LED
+        c.create_rectangle(298, 207, 306, 223, outline="#ffffff", fill="#a8dadc")   # fototransistor
+        c.create_line(288, 215, 298, 215, fill="#f4a261", width=1, dash=(2, 2))
+        self.val_od = instrumento(365, 215, "OD", "AIT-102 OD600")
+
+        # Flujo (FIT-101 / FL1): sensor de pulsos en la línea de dosificación (cosecha)
+        self.bola_flujo = c.create_oval(358, 262, 384, 288, outline="#ffffff", fill=sensor_fill, width=1.5)
+        c.create_text(371, 275, text="F", fill="#ffffff", font=(FUENTE, 8, "bold"))
+        self.val_flujo = c.create_text(371, 300, text="--", fill=COLOR_LED_ON, font=(FUENTE, 9, "bold"))
+        c.create_text(371, 313, text="FIT-101 FLUJO", fill=txt, font=(FUENTE, 7, "bold"))
+
         self._lineas_animables = [self.linea_ph, self.linea_iptg, self.linea_aire,
                                    self.linea_cosecha_a, self.linea_cosecha_b, self.eje]
 
@@ -819,6 +858,21 @@ class PIDDiagram(ctk.CTkFrame):
         c.itemconfig(self.bomba_cosecha, fill=on if cosecha_on else off)
         c.itemconfig(self.linea_cosecha_a, fill=on if cosecha_on else off)
         c.itemconfig(self.linea_cosecha_b, fill=on if cosecha_on else off)
+
+    def actualizar_lecturas(self, temp=None, ph=None, od600=None, flujo_alerta=False, litros=None):
+        """Valores en vivo junto a cada instrumento. El de flujo se pone en rojo si hay una
+        bomba encendida sin flujo detectado."""
+        c = self.canvas
+        if temp is not None:
+            c.itemconfig(self.val_temp, text=f"{temp:.1f} °C")
+        if ph is not None:
+            c.itemconfig(self.val_ph, text=f"{ph:.2f}")
+        if od600 is not None:
+            c.itemconfig(self.val_od, text=f"{od600:.3f}")
+        c.itemconfig(self.val_flujo, text=("SIN FLUJO" if flujo_alerta else
+                                           (f"{litros:.2f} L" if litros is not None else "--")),
+                     fill=COLOR_LED_ALERTA if flujo_alerta else COLOR_LED_ON)
+        c.itemconfig(self.bola_flujo, outline=COLOR_LED_ALERTA if flujo_alerta else "#ffffff")
 
     def detener(self):
         """Detiene la animación y cancela el after() pendiente (llamar al
@@ -1470,6 +1524,11 @@ class DashboardApp(ctk.CTk):
 
         self.lbl_flujo.set_estado(hay_alerta_activa)
         self.lbl_flujo_info.configure(text=f"Flujo: {pulsos} pulsos ({litros:.3f} L acum)")
+        with self.datos_lock:
+            ud = self.ultimos_datos
+        self.pid.actualizar_lecturas(
+            temp=ud[0] if ud else None, ph=ud[1] if ud else None, od600=ud[2] if ud else None,
+            flujo_alerta=hay_alerta_activa, litros=litros)
 
         for num in nuevas_alertas:
             nombre_bomba = self.RELES_DOSIFICACION.get(num, f"Relé {num}")
