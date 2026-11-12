@@ -1,5 +1,9 @@
 /*
  * Biorreactor-FCITEC — Firmware V3
+ *
+ * ⚠ NO USAR con controlfisicoV2.py tal como está: es incompatible (ver README, "Qué firmware
+ *   usar"). Quita OD:BLANK, FLOW, el watchdog y el sensor de flujo de V2, y su OD de telemetría
+ *   es lineal (la razón logarítmica solo sale con ODLOGGET; V2 ya la usaba en la telemetría).
  * -----------------------------------------------------------------------
  * Cambios respecto a codigotesisV2.ino (ver MEJORAS.md para el detalle):
  *

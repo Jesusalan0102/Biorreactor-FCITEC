@@ -35,9 +35,16 @@ async def _tarea_limpieza_periodica():
         await asyncio.sleep(SEGUNDOS_ENTRE_LIMPIEZAS)
 
 
-if not os.environ.get("SESSION_SECRET"):
-    print("[ADVERTENCIA] SESSION_SECRET no definida: usando clave por defecto "
-          "(insegura). Defínela en las variables de entorno.")
+_SESSION_SECRET = os.environ.get("SESSION_SECRET")
+if not _SESSION_SECRET:
+    # Antes se usaba una clave fija y pública ("cambia-esta-clave-en-produccion"): cualquiera
+    # podía falsificar una cookie de sesión y llamar a /api/paro o /api/reanudar. Ahora, si
+    # falta la variable, se genera una clave aleatoria por arranque (las sesiones se cierran
+    # al reiniciar, pero nadie puede falsificarlas).
+    import secrets
+    _SESSION_SECRET = secrets.token_hex(32)
+    print("[ADVERTENCIA] SESSION_SECRET no definida: se generó una clave aleatoria temporal. "
+          "Defínela en las variables de entorno para que las sesiones sobrevivan a reinicios.")
 
 app = FastAPI(title="SCADA Biorreactor Web")
 
@@ -49,7 +56,7 @@ async def _iniciar_tarea_limpieza():
 
 app.add_middleware(
     SessionMiddleware,
-    secret_key=os.environ.get("SESSION_SECRET", "cambia-esta-clave-en-produccion"),
+    secret_key=_SESSION_SECRET,
     session_cookie="scada_session",
     max_age=60 * 60 * 8,  # 8 horas
     same_site="lax",

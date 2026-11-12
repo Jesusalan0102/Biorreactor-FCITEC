@@ -148,7 +148,7 @@ conectarWS();
 
 // ---- Botones Paro / Reanudar ----
 document.getElementById("btn-paro").addEventListener("click", async () => {
-  if (!confirm("¿Activar PARO DE EMERGENCIA físico?")) return;
+  if (!confirm("¿Enviar PARO DE EMERGENCIA remoto?\n\nSe aplica a través de la base de datos y de la app de escritorio (hasta ~3 s). Si la PC o su internet están caídos, NO se detendrá nada: usa el paro local o desconecta la alimentación.")) return;
   const res = await fetch("/api/paro", { method: "POST" });
   const data = await res.json();
   alert(data.ok ? "Paro de emergencia activado en el sistema" : "No se pudo activar el paro");

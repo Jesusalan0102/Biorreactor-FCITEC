@@ -24,6 +24,19 @@ autonomía, seguridad y trazabilidad descritas en `MEJORAS.md`.
 - **Monitoreo web (`monitoreoV2.py`)**: capa de acceso a datos para un
   SCADA web remoto sobre la misma base MySQL.
 
+## Qué firmware usar
+
+| Firmware | Compatible con `controlfisicoV2.py` | Notas |
+|---|---|---|
+| `codigotesisV2.ino` | **Sí — es el que debes cargar** | OD600 por Beer-Lambert (`-log10(V/V0)`, como el paper), blanco con `OD:BLANK`, sensor de flujo FL1 (`FLOW`, `WARNING:BOMBA_SIN_FLUJO`) y watchdog: apaga los relés si pasan 10 s sin comandos de la PC. |
+| `codigotesisV3.ino` | **No (todavía)** | Pensado para control autónomo en el Arduino, pero la app de escritorio no le manda `START`, usa comandos que V3 ya no tiene (`OD:BLANK`, `FLOW`), V3 quita el watchdog y el sensor de flujo, y su telemetría de OD vuelve a la calibración lineal (el log está solo en `ODLOGGET`). Además la app y el firmware se estorbarían: la app reenvía los relés cada 5 s como override manual. Se puede adoptar cuando la app integre `START/STOP/STAGEGET` y V3 recupere esas funciones. |
+
+## Control en la app de escritorio (cambios recientes)
+
+- **Pulsos de bomba exactos:** una vigilancia cada 200 ms apaga las bombas de NaOH, IPTG y cosecha al cumplirse su tiempo (antes el apagado se revisaba cada 5 s y un pulso de ~1 s duraba hasta 5 s).
+- **Filtro de 10 lecturas consecutivas** por encima del umbral antes de inducir con IPTG o cosechar (como el paper).
+- **Clave maestra:** si `CLAVE_MAESTRA` no está definida, el acceso maestro queda deshabilitado; la contraseña ya no se imprime en consola.
+
 ## Mapeo de relés
 
 | Relé | Pin Arduino | Actuador |

@@ -409,7 +409,10 @@ class LoginApp(ctk.CTk):
         self.fondo.tag_lower("grad")
 
     def activar_admin(self):
-        if self.clave_entry.get() == CLAVE_MAESTRA:
+        if not CLAVE_MAESTRA:
+            mostrar_error(self, "Acceso denegado",
+                          "No hay clave maestra configurada (variable CLAVE_MAESTRA en .env).")
+        elif self.clave_entry.get() == CLAVE_MAESTRA:
             self.tarjeta.place_forget()
             self.admin_frame.place(relx=0.5, rely=0.5, anchor="center",
                                     relwidth=0.7, relheight=0.8)
@@ -601,13 +604,14 @@ class LoginApp(ctk.CTk):
         user = self.username_entry.get().strip()
         pwd = self.password_entry.get().strip()
 
-        print(f"Usuario ingresado: '{user}'")
-        print(f"Contraseña ingresada: '{pwd}'")
+        print(f"Usuario ingresado: '{user}'")   # la contraseña nunca se imprime
 
         acceso_concedido = False
         self.usuario_id = None
 
-        if user == "admin" and pwd == CLAVE_MAESTRA:
+        # Con CLAVE_MAESTRA vacía (variable de entorno ausente) NO se permite el acceso
+        # maestro: antes "admin" + contraseña vacía entraba sin credenciales.
+        if CLAVE_MAESTRA and user == "admin" and pwd == CLAVE_MAESTRA:
             print("Acceso forzado con clave maestra → abriendo Dashboard")
             acceso_concedido = True
             self.usuario_id = 0
@@ -619,7 +623,6 @@ class LoginApp(ctk.CTk):
                     print("Conexión DB OK, ejecutando query...")
                     cursor.execute("SELECT * FROM usuarios WHERE username=%s", (user,))
                     result = cursor.fetchone()
-                    print("Resultado de la query:", result)
                     if result and verificar_password(pwd, result['password']):
                         print("Usuario encontrado en DB → abriendo Dashboard")
                         self.usuario_id = result['id']
@@ -936,6 +939,13 @@ class DashboardApp(ctk.CTk):
         }
         self.histeresis = {'temperatura': 0.5, 'ph': 0.2}
 
+        # Paper (Marinescu & Popescu 2018): para decisiones irreversibles (inducir con IPTG,
+        # cosechar) deben cumplirse N lecturas CONSECUTIVAS por encima del umbral; así un pico
+        # de ruido del sensor no dispara la inducción o la cosecha. Se cuenta a la velocidad
+        # de la telemetría (1 lectura/s), no a la del ciclo de control (5 s).
+        self.LECTURAS_CONSECUTIVAS_OD = 10
+        self._od_consec = {'induccion': 0, 'cosecha': 0}
+
         # ---------------------------------------------------------------
         # Parámetros de proceso alineados al paper de referencia
         # (Marinescu & Popescu, 2018, "Open-Source bioreactor controller
@@ -1009,6 +1019,7 @@ class DashboardApp(ctk.CTk):
         # Iniciar chequeo BD y actualización GUI
         self.chequear_emergencia_periodico()
         self.actualizar_gui_periodica()
+        self._vigilar_bombas()
 
     def construir_ui(self):
         self.configure(fg_color=COLOR_ACERO)
@@ -1372,6 +1383,7 @@ class DashboardApp(ctk.CTk):
                                     self.datos["temperatura"].append(temp)
                                     self.datos["ph"].append(ph)
                                     self.datos["od600"].append(od600)
+                                    self._contar_od_consecutivas(od600)
 
                                     if len(self.datos["tiempo"]) > 200:
                                         for k in self.datos:
@@ -1670,13 +1682,13 @@ class DashboardApp(ctk.CTk):
 
         self._gestionar_ph_dosificacion(ph)
 
-        if self.etapa == "GROWING" and od600 >= self.rango_control['od600_induccion']:
+        if self.etapa == "GROWING" and self._od_consec['induccion'] >= self.LECTURAS_CONSECUTIVAS_OD:
             self.etapa = "INDUCED"
             self._iniciar_dosis_iptg()
 
         if self.etapa == "INDUCED":
             self._gestionar_iptg_dosificacion()
-            if od600 >= self.rango_control['od600_cosecha']:
+            if self._od_consec['cosecha'] >= self.LECTURAS_CONSECUTIVAS_OD:
                 self.etapa = "HARVEST"
                 self._iniciar_cosecha()
 
@@ -1706,6 +1718,63 @@ class DashboardApp(ctk.CTk):
 
         self._enviar_estado_reles()
 
+    def _contar_od_consecutivas(self, od600):
+        """Cuenta lecturas seguidas por encima de los umbrales de inducción/cosecha (se
+        reinicia a 0 con cualquier lectura por debajo). Se llama desde hilo_lectura."""
+        c = self._od_consec
+        c['induccion'] = c['induccion'] + 1 if od600 >= self.rango_control['od600_induccion'] else 0
+        c['cosecha'] = c['cosecha'] + 1 if od600 >= self.rango_control['od600_cosecha'] else 0
+
+    def _vigilar_bombas(self):
+        """Apaga las bombas de dosificación EN SU MOMENTO. El ciclo de control corre cada 5 s,
+        pero los pulsos de NaOH/IPTG duran ~1 s: si el apagado solo se revisara en ese ciclo, la
+        bomba seguiría encendida hasta 5 s (≈4 veces el volumen calculado). Esta vigilancia
+        corre cada 200 ms y manda el OFF inmediatamente."""
+        if not self.is_running:
+            return
+        try:
+            if not (self.emergencia or self.pausado):
+                antes = (self.bomba_ph, self.bomba_iptg, self.bomba_cosecha)
+                self._finalizar_pulso_ph()
+                self._gestionar_iptg_dosificacion()
+                if self.etapa == "HARVEST":
+                    self._gestionar_cosecha_dosificacion()
+                if (self.bomba_ph, self.bomba_iptg, self.bomba_cosecha) != antes:
+                    self.rele_estados[2] = self.bomba_ph
+                    self.rele_estados[3] = self.bomba_iptg
+                    self.rele_estados[4] = self.bomba_cosecha
+                    self._enviar_estado_reles()
+        except Exception as e:
+            print(f"[BOMBAS] Error en vigilancia de bombas: {e}")
+        finally:
+            if self.is_running:
+                self._after_ids['bombas'] = self.after(200, self._vigilar_bombas)
+
+    def _finalizar_pulso_ph(self):
+        """Si hay un pulso de NaOH en curso y ya cumplió su duración, lo termina. Devuelve True
+        si la bomba sigue bombeando."""
+        estado = self._ph_estado
+        if not estado['bombeando']:
+            return False
+        cfg = self.ph_dosificacion
+        ahora = time.time()
+        duracion = estado['volumen_actual_ml'] / cfg['flujo_bomba_ml_s']
+        if ahora - estado['inicio_bombeo'] < duracion:
+            return True
+        self.bomba_ph = False
+        estado['bombeando'] = False
+        estado['ultimo_fin_bombeo'] = ahora
+        estado['total_naoh_ml'] += estado['volumen_actual_ml']
+        estado['dosis_consecutivas'] += 1
+        print(f"[pH] Pulso de NaOH completado: {estado['volumen_actual_ml']:.2f} mL "
+              f"(total acumulado: {estado['total_naoh_ml']:.2f} mL)")
+        if estado['dosis_consecutivas'] >= cfg['dosis_para_duplicar']:
+            estado['volumen_actual_ml'] *= 2
+            estado['dosis_consecutivas'] = 0
+            print(f"[pH] pH no se recuperó tras {cfg['dosis_para_duplicar']} pulsos seguidos "
+                  f"→ se duplica el volumen del próximo pulso a {estado['volumen_actual_ml']:.2f} mL")
+        return False
+
     def _gestionar_ph_dosificacion(self, ph):
         """Dosificación de base (NaOH) por pulsos, con volumen que se
         duplica si el pH no se recupera tras varios pulsos seguidos --
@@ -1717,21 +1786,7 @@ class DashboardApp(ctk.CTk):
         cfg = self.ph_dosificacion
 
         if estado['bombeando']:
-            duracion = estado['volumen_actual_ml'] / cfg['flujo_bomba_ml_s']
-            if ahora - estado['inicio_bombeo'] >= duracion:
-                # Termina el pulso actual.
-                self.bomba_ph = False
-                estado['bombeando'] = False
-                estado['ultimo_fin_bombeo'] = ahora
-                estado['total_naoh_ml'] += estado['volumen_actual_ml']
-                estado['dosis_consecutivas'] += 1
-                print(f"[pH] Pulso de NaOH completado: {estado['volumen_actual_ml']:.2f} mL "
-                      f"(total acumulado: {estado['total_naoh_ml']:.2f} mL)")
-                if estado['dosis_consecutivas'] >= cfg['dosis_para_duplicar']:
-                    estado['volumen_actual_ml'] *= 2
-                    estado['dosis_consecutivas'] = 0
-                    print(f"[pH] pH no se recuperó tras {cfg['dosis_para_duplicar']} pulsos seguidos "
-                          f"→ se duplica el volumen del próximo pulso a {estado['volumen_actual_ml']:.2f} mL")
+            self._finalizar_pulso_ph()
             return  # mientras bombea, no se evalúa nada más este ciclo
 
         if ph >= self.rango_control['ph']['min'] + self.histeresis['ph']:
@@ -1887,6 +1942,7 @@ class DashboardApp(ctk.CTk):
             self._cosecha_estado.update({
                 'inicio_bombeo': None, 'duracion_s': None, 'pausado_desde': None,
             })
+            self._od_consec = {'induccion': 0, 'cosecha': 0}
             mostrar_info(self, "Cultivo", "Cultivo iniciado - agitación y aeración activadas (relés 5 y 6 ON)")
 
     def paro_emergencia(self):
