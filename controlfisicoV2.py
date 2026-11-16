@@ -67,6 +67,44 @@ COLOR_DIGITAL_TEXTO = "#39FF14"
 FUENTE_DIGITAL = "Consolas"
 
 
+PARAMS_ARCHIVO = os.path.join(os.path.dirname(os.path.abspath(__file__)), "parametros_proceso.json")
+
+# (pestaña, grupo, etiqueta, unidad, ruta dentro de DashboardApp, mínimo, máximo, entero)
+ESQUEMA_PARAMETROS = [
+    ("Dosificación", "NaOH · bomba de pH", "Volumen por pulso", "mL", "ph_dosificacion.volumen_base_ml", 0.01, 20, False),
+    ("Dosificación", "NaOH · bomba de pH", "Espera entre pulsos", "s", "ph_dosificacion.espera_entre_dosis_s", 1, 3600, False),
+    ("Dosificación", "NaOH · bomba de pH", "Espera de feedback tras cada pulso", "s", "ph_dosificacion.espera_feedback_s", 1, 300, False),
+    ("Dosificación", "NaOH · bomba de pH", "Pulsos seguidos para duplicar el volumen", "pulsos", "ph_dosificacion.dosis_para_duplicar", 1, 100, True),
+    ("Dosificación", "NaOH · bomba de pH", "Caudal de la bomba", "mL/s", "ph_dosificacion.flujo_bomba_ml_s", 0.001, 50, False),
+    ("Dosificación", "IPTG · bomba de inducción", "Volumen por pulso", "mL", "iptg_dosificacion.volumen_pulso_ml", 0.01, 20, False),
+    ("Dosificación", "IPTG · bomba de inducción", "Número de pulsos", "pulsos", "iptg_dosificacion.num_pulsos", 1, 20, True),
+    ("Dosificación", "IPTG · bomba de inducción", "Espera de feedback tras cada pulso", "s", "iptg_dosificacion.espera_feedback_s", 1, 300, False),
+    ("Dosificación", "IPTG · bomba de inducción", "Caudal de la bomba", "mL/s", "iptg_dosificacion.flujo_bomba_ml_s", 0.001, 50, False),
+    ("Dosificación", "IPTG · bomba de inducción", "Volumen de cultivo (para la concentración)", "mL", "iptg_dosificacion.volumen_cultivo_ml", 10, 20000, False),
+    ("Dosificación", "IPTG · bomba de inducción", "Concentración del stock de IPTG", "mM", "iptg_dosificacion.concentracion_stock_mM", 1, 5000, False),
+    ("Dosificación", "Cosecha", "Volumen a cosechar", "mL", "cosecha_dosificacion.volumen_cultivo_ml", 10, 20000, False),
+    ("Dosificación", "Cosecha", "Caudal de la bomba", "mL/s", "cosecha_dosificacion.flujo_bomba_ml_s", 0.001, 50, False),
+    ("Control", "Temperatura", "Mínimo (enciende el calefactor)", "°C", "rango_control.temperatura.min", 0, 60, False),
+    ("Control", "Temperatura", "Máximo (paro de emergencia)", "°C", "rango_control.temperatura.max", 0, 80, False),
+    ("Control", "Temperatura", "Histéresis", "°C", "histeresis.temperatura", 0.05, 10, False),
+    ("Control", "pH", "Mínimo (dosifica NaOH si baja de aquí)", "pH", "rango_control.ph.min", 0, 14, False),
+    ("Control", "pH", "Máximo (alarma)", "pH", "rango_control.ph.max", 0, 14, False),
+    ("Control", "pH", "Histéresis", "pH", "histeresis.ph", 0.01, 3, False),
+    ("Control", "OD600", "Umbral de inducción", "OD600", "rango_control.od600_induccion", 0.01, 20, False),
+    ("Control", "OD600", "Umbral de cosecha", "OD600", "rango_control.od600_cosecha", 0.01, 20, False),
+    ("Control", "OD600", "Lecturas consecutivas requeridas", "lecturas", "LECTURAS_CONSECUTIVAS_OD", 1, 100, True),
+    ("Flujo", "Sensor de flujo (FL1)", "Pulsos por litro (factor K)", "pulsos/L", "flujo_cfg.pulsos_por_litro", 1, 1000000, False),
+    ("Flujo", "Sensor de flujo (FL1)", "Caudal mínimo del sensor (etiqueta)", "L/min", "flujo_cfg.rango_min_lpm", 0.01, 10, False),
+    ("Flujo", "Sensor de flujo (FL1)", "Pulsos para dar el sensor por validado", "pulsos", "flujo_cfg.min_pulsos_validacion", 5, 1000, True),
+    ("Flujo", "Sensor de flujo (FL1)", "Tolerancia de la verificación", "%", "flujo_cfg.tolerancia_pct", 5, 90, False),
+    ("Flujo", "Sensor de flujo (FL1)", "Pulsos esperados mínimos para verificar", "pulsos", "flujo_cfg.min_pulsos_verif", 1, 1000, True),
+]
+
+BOMBAS_DOSIFICACION = {2: ("NaOH (pH)", "ph_dosificacion", "bomba_ph"),
+                       3: ("IPTG", "iptg_dosificacion", "bomba_iptg"),
+                       4: ("Cosecha", "cosecha_dosificacion", "bomba_cosecha")}
+
+
 class ModalBase(ctk.CTkToplevel):
     """Base para reemplazar messagebox/simpledialog con algo que combine
     con el resto de la app (tarjeta oscura redondeada, sin chrome de Windows)."""
@@ -828,11 +866,11 @@ class PIDDiagram(ctk.CTkFrame):
         c.create_line(288, 215, 298, 215, fill="#f4a261", width=1, dash=(2, 2))
         self.val_od = instrumento(365, 215, "OD", "AIT-102 OD600")
 
-        # Flujo (FIT-101 / FL1): sensor de pulsos en la línea de dosificación (cosecha)
-        self.bola_flujo = c.create_oval(358, 262, 384, 288, outline="#ffffff", fill=sensor_fill, width=1.5)
-        c.create_text(371, 275, text="F", fill="#ffffff", font=(FUENTE, 8, "bold"))
-        self.val_flujo = c.create_text(371, 300, text="--", fill=COLOR_LED_ON, font=(FUENTE, 9, "bold"))
-        c.create_text(371, 313, text="FIT-101 FLUJO", fill=txt, font=(FUENTE, 7, "bold"))
+        # Flujo (FIT-101 / FL1): DIGITEN FL-S402B en línea con la salida de la bomba de IPTG
+        self.bola_flujo = c.create_oval(152, 259, 178, 285, outline="#ffffff", fill=sensor_fill, width=1.5)
+        c.create_text(165, 272, text="F", fill="#ffffff", font=(FUENTE, 8, "bold"))
+        self.val_flujo = c.create_text(165, 297, text="--", fill=COLOR_LED_ON, font=(FUENTE, 9, "bold"))
+        c.create_text(165, 310, text="FIT-101 FLUJO", fill=txt, font=(FUENTE, 7, "bold"))
 
         self._lineas_animables = [self.linea_ph, self.linea_iptg, self.linea_aire,
                                    self.linea_cosecha_a, self.linea_cosecha_b, self.eje]
@@ -870,7 +908,7 @@ class PIDDiagram(ctk.CTkFrame):
         if od600 is not None:
             c.itemconfig(self.val_od, text=f"{od600:.3f}")
         c.itemconfig(self.val_flujo, text=("SIN FLUJO" if flujo_alerta else
-                                           (f"{litros:.2f} L" if litros is not None else "--")),
+                                           (f"{litros * 1000:.1f} mL" if litros is not None else "--")),
                      fill=COLOR_LED_ALERTA if flujo_alerta else COLOR_LED_ON)
         c.itemconfig(self.bola_flujo, outline=COLOR_LED_ALERTA if flujo_alerta else "#ffffff")
 
@@ -1032,6 +1070,7 @@ class DashboardApp(ctk.CTk):
             'flujo_bomba_ml_s': 0.438,      # OH_FLOW de referencia del paper (438 µL/s) -- CALIBRAR
             'espera_entre_dosis_s': 60,      # OH_ON_OFF_MILISEC del paper (1 min)
             'dosis_para_duplicar': 10,       # tras 10 dosis seguidas sin recuperar el pH, se duplica
+            'espera_feedback_s': 10,         # tras cada pulso: 10 s de espera y lectura de sensores
         }
         self._ph_estado = {
             'volumen_actual_ml': self.ph_dosificacion['volumen_base_ml'],
@@ -1040,6 +1079,8 @@ class DashboardApp(ctk.CTk):
             'inicio_bombeo': None,
             'ultimo_fin_bombeo': None,
             'total_naoh_ml': 0.0,
+            'feedback_hasta': None,          # fin de la ventana de espera de 10 s
+            'sensores_antes': None,          # (temp, ph, od600) al iniciar el pulso
         }
 
         self.iptg_dosificacion = {
@@ -1047,6 +1088,9 @@ class DashboardApp(ctk.CTk):
             'concentracion_stock_mM': 1000,   # concentración del stock de IPTG (típico 1 M) -- AJUSTAR
             'concentracion_final_mM': 1,      # concentración final deseada (paper: 1 mM)
             'flujo_bomba_ml_s': 0.417,        # flujo de la bomba de IPTG -- CALIBRAR
+            'volumen_pulso_ml': 1.0,          # cada pulso de IPTG inyecta 1 mL
+            'num_pulsos': 1,                  # pulsos de 1 mL por inducción (1 pulso = 1 mL en total)
+            'espera_feedback_s': 10,          # tras cada pulso: 10 s de espera y lectura de sensores
         }
         self._iptg_estado = {
             'bombeando': False,
@@ -1054,6 +1098,10 @@ class DashboardApp(ctk.CTk):
             'duracion_s': None,
             'completado': False,
             'pausado_desde': None,  # timestamp si un paro de emergencia interrumpió el bolo
+            'pulsos_hechos': 0,
+            'total_ml': 0.0,        # mL de IPTG inyectados en el lote
+            'espera_hasta': None,   # fin de la ventana de espera de 10 s
+            'sensores_antes': None, # (temp, ph, od600) al iniciar el pulso
         }
 
         self.cosecha_dosificacion = {
@@ -1065,6 +1113,27 @@ class DashboardApp(ctk.CTk):
             'duracion_s': None,
             'pausado_desde': None,  # timestamp si un paro de emergencia interrumpió la cosecha
         }
+
+        # --- Sensor de flujo como instrumento de medición y diagnóstico ---
+        self.flujo_cfg = {
+            # DIGITEN FL-S402B: F(Hz) = 23 · Q(L/min)  →  23 · 60 = 1380 pulsos por litro.
+            # Es el valor de la etiqueta: calibrar con probeta (pestaña Bombas y flujo).
+            'pulsos_por_litro': 1380.0,
+            'rango_min_lpm': 0.3,        # caudal mínimo del sensor según su etiqueta (0.3–10 L/min)
+            'tolerancia_pct': 25,        # desviación aceptada entre mL esperados y medidos
+            'min_pulsos_verif': 5,       # pulsos esperados mínimos para un veredicto de VOLUMEN
+            'min_pulsos_validacion': 20, # pulsos mínimos en una prueba para dar el sensor por VALIDADO
+            'sensor_validado': False,    # True solo si una prueba demostró que responde al caudal real
+            'bombas_con_sensor': [3],    # relés cuya línea pasa por el sensor: salida del IPTG
+        }
+        self._flow_cbs = []              # cola de (timestamp, callback) de peticiones FLOW
+        self._flujo_medicion = {}        # relé -> {'ini': pulsos al iniciar, 'esperado_ml': mL}
+        self._flujo_verif = {n: self._verif_vacia() for n in BOMBAS_DOSIFICACION}
+        self._prueba_bomba = None        # prueba de bomba en curso (ver iniciar_prueba_bomba)
+        self._avisos_pendientes = []     # (relé, texto) que el hilo serial deja para mostrar en la GUI
+        self._ultima_telemetria_ts = None
+        self.ventana_parametros = None
+        self.cargar_parametros()
 
         self.is_running = True
 
@@ -1115,7 +1184,7 @@ class DashboardApp(ctk.CTk):
         # Segunda línea del panel digital: estado del sensor de flujo
         # (volumen acumulado desde que arrancó el Arduino). Se actualiza
         # con el polling periódico de FLOW en actualizar_gui_periodica.
-        self.lbl_flujo_info = ctk.CTkLabel(display, text="Flujo: --- pulsos (---.-- L acum)",
+        self.lbl_flujo_info = ctk.CTkLabel(display, text="Flujo: --- pulsos (---.- mL acum)",
                                            font=(FUENTE_DIGITAL, 12), text_color=COLOR_TEXTO_SUAVE)
         self.lbl_flujo_info.pack(padx=14, pady=(0, 8))
 
@@ -1180,6 +1249,11 @@ class DashboardApp(ctk.CTk):
                                                  hover_color="#1c3a66", width=140, corner_radius=10,
                                                  command=self.consultar_flujo, state="disabled")
         self.btn_consultar_flujo.pack(pady=4)
+
+        self.btn_parametros = ctk.CTkButton(botonera_right, text="Parámetros y Diagnóstico", fg_color="#00796b",
+                                            hover_color="#00695c", width=140, corner_radius=10,
+                                            command=self.abrir_parametros)
+        self.btn_parametros.pack(pady=4)
 
         self.lbl_reles = ctk.CTkLabel(top, text="Relés: --- | Bombas: ---", font=(FUENTE_DIGITAL, 11),
                                       text_color=COLOR_TEXTO_SUAVE)
@@ -1301,7 +1375,7 @@ class DashboardApp(ctk.CTk):
         self.btn_consultar_flujo.configure(state="disabled")
         self.lbl_etapa.configure(text="ETAPA: DESCONECTADO")
         self.lbl_ultimo.configure(text="T=--.- °C   pH=--.--   OD600=-.---")
-        self.lbl_flujo_info.configure(text="Flujo: --- pulsos (---.-- L acum)")
+        self.lbl_flujo_info.configure(text="Flujo: --- pulsos (---.- mL acum)")
         self.lbl_flujo.set_estado(False)
         with self.flujo_lock:
             self.alertas_flujo.clear()
@@ -1398,9 +1472,16 @@ class DashboardApp(ctk.CTk):
                     if linea.startswith("WARNING:BOMBA_SIN_FLUJO:RELE:"):
                         try:
                             num = int(linea.split("RELE:")[-1])
-                            with self.flujo_lock:
-                                self.alertas_flujo[num] = time.time()
-                            print(f"[FLUJO][ADVERTENCIA] Bomba en relé {num} sin flujo detectado")
+                            # Con un solo sensor, el firmware ve 'sin pulsos' en las bombas de las
+                            # líneas que NO pasan por él (p. ej. la cosecha, que dura minutos): eso
+                            # no es una falla. Y si el sensor no está validado a este caudal, tampoco.
+                            if num in self.flujo_cfg['bombas_con_sensor'] and self.flujo_cfg['sensor_validado']:
+                                with self.flujo_lock:
+                                    self.alertas_flujo[num] = time.time()
+                                print(f"[FLUJO][ADVERTENCIA] Bomba en relé {num} sin flujo detectado")
+                            else:
+                                print(f"[FLUJO][info] Aviso del firmware ignorado para el relé {num} "
+                                      "(sin sensor en esa línea o sensor no validado)")
                         except Exception as e:
                             print(f"[ERROR PARSEO WARNING FLUJO] {e}")
                         continue
@@ -1409,10 +1490,20 @@ class DashboardApp(ctk.CTk):
                         try:
                             resto = linea[len("FLOW:PULSOS:"):]
                             pulsos_parte, litros_parte = resto.split(",LITROS_ACUM:")
+                            pulsos_n = int(pulsos_parte)
+                            cb = None
                             with self.flujo_lock:
-                                self.flujo_pulsos = int(pulsos_parte)
-                                self.flujo_litros_acum = float(litros_parte)
-                            print(f"[FLUJO] {pulsos_parte} pulsos, {litros_parte} L acumulados")
+                                self.flujo_pulsos = pulsos_n
+                                # Litros con el factor K calibrado en la app (el del firmware es fijo).
+                                self.flujo_litros_acum = pulsos_n / max(self.flujo_cfg['pulsos_por_litro'], 1e-9)
+                                ahora_f = time.time()
+                                while self._flow_cbs and ahora_f - self._flow_cbs[0][0] > 3.0:
+                                    self._flow_cbs.pop(0)   # respuesta que nunca llegó
+                                if self._flow_cbs:
+                                    cb = self._flow_cbs.pop(0)[1]
+                            if cb:
+                                cb(pulsos_n)
+                            print(f"[FLUJO] {pulsos_parte} pulsos")
                         except Exception as e:
                             print(f"[ERROR PARSEO FLOW] {e}")
                         continue
@@ -1433,6 +1524,7 @@ class DashboardApp(ctk.CTk):
 
                                 with self.datos_lock:
                                     self.ultimos_datos = (temp, ph, od600)
+                                    self._ultima_telemetria_ts = time.time()
                                     self.datos["tiempo"].append(datetime.now())
                                     self.datos["temperatura"].append(temp)
                                     self.datos["ph"].append(ph)
@@ -1523,7 +1615,13 @@ class DashboardApp(ctk.CTk):
                 self.alertas_flujo_avisadas.add(n)
 
         self.lbl_flujo.set_estado(hay_alerta_activa)
-        self.lbl_flujo_info.configure(text=f"Flujo: {pulsos} pulsos ({litros:.3f} L acum)")
+        probs = [BOMBAS_DOSIFICACION[n][0] for n, v in self._flujo_verif.items()
+                 if v['veredicto'] in ('SIN FLUJO', 'FUERA DE TOLERANCIA')]
+        extra = f"  ⚠ verificar: {', '.join(probs)}" if probs else ""
+        self.lbl_flujo_info.configure(text=f"Flujo: {pulsos} pulsos ({litros * 1000:.1f} mL acum){extra}")
+        while self._avisos_pendientes:
+            _num, _txt = self._avisos_pendientes.pop(0)
+            mostrar_aviso(self, "Verificación de dosificación", _txt)
         with self.datos_lock:
             ud = self.ultimos_datos
         self.pid.actualizar_lecturas(
@@ -1773,6 +1871,7 @@ class DashboardApp(ctk.CTk):
         self.lbl_reles.configure(
             text=f"Relés: {self.rele_estados} | Bombas: pH={self.bomba_ph}, IPTG={self.bomba_iptg}, "
                  f"Cosecha={self.bomba_cosecha} | NaOH total: {self._ph_estado['total_naoh_ml']:.2f} mL"
+                 f" | IPTG total: {self._iptg_estado['total_ml']:.2f} mL"
         )
 
         self._enviar_estado_reles()
@@ -1792,9 +1891,11 @@ class DashboardApp(ctk.CTk):
         if not self.is_running:
             return
         try:
+            self._vigilar_prueba_bomba()
             if not (self.emergencia or self.pausado):
                 antes = (self.bomba_ph, self.bomba_iptg, self.bomba_cosecha)
                 self._finalizar_pulso_ph()
+                self._revisar_feedback_ph()
                 self._gestionar_iptg_dosificacion()
                 if self.etapa == "HARVEST":
                     self._gestionar_cosecha_dosificacion()
@@ -1825,6 +1926,7 @@ class DashboardApp(ctk.CTk):
         estado['ultimo_fin_bombeo'] = ahora
         estado['total_naoh_ml'] += estado['volumen_actual_ml']
         estado['dosis_consecutivas'] += 1
+        estado['feedback_hasta'] = ahora + cfg['espera_feedback_s']
         print(f"[pH] Pulso de NaOH completado: {estado['volumen_actual_ml']:.2f} mL "
               f"(total acumulado: {estado['total_naoh_ml']:.2f} mL)")
         if estado['dosis_consecutivas'] >= cfg['dosis_para_duplicar']:
@@ -1858,51 +1960,103 @@ class DashboardApp(ctk.CTk):
             return
 
         if ph < self.rango_control['ph']['min']:
+            # Nunca se dosifica antes de que termine la ventana de feedback de 10 s.
+            espera_min = max(cfg['espera_entre_dosis_s'], cfg['espera_feedback_s'])
             espera_cumplida = (
                 estado['ultimo_fin_bombeo'] is None
-                or (ahora - estado['ultimo_fin_bombeo']) >= cfg['espera_entre_dosis_s']
+                or (ahora - estado['ultimo_fin_bombeo']) >= espera_min
             )
             if espera_cumplida:
                 self.bomba_ph = True
                 estado['bombeando'] = True
                 estado['inicio_bombeo'] = ahora
+                estado['sensores_antes'] = self.ultimos_datos
+                self._flujo_inicio(2, estado['volumen_actual_ml'])
                 print(f"[pH] pH bajo ({ph:.2f}) → iniciando pulso de {estado['volumen_actual_ml']:.2f} mL de NaOH")
 
     def _iniciar_dosis_iptg(self):
-        """Calcula el tiempo de bombeo de IPTG necesario para alcanzar la
-        concentración final deseada en el cultivo (dosis única / bolo, no
-        continua) y arranca la bomba. Duración = volumen_necesario / flujo,
-        donde volumen_necesario = volumen_cultivo * conc_final / conc_stock."""
+        """Arranca la inducción con IPTG: 'num_pulsos' pulsos de 'volumen_pulso_ml' (1 mL).
+        Duración de cada pulso = volumen_pulso / flujo de la bomba. Entre pulsos, y tras el
+        último, se espera 'espera_feedback_s' (10 s) y se registra la respuesta de los sensores."""
         cfg = self.iptg_dosificacion
-        volumen_necesario_ml = (
-            cfg['volumen_cultivo_ml'] * cfg['concentracion_final_mM'] / cfg['concentracion_stock_mM']
-        )
-        duracion_s = volumen_necesario_ml / cfg['flujo_bomba_ml_s']
-        self._iptg_estado['bombeando'] = True
-        self._iptg_estado['inicio_bombeo'] = time.time()
-        self._iptg_estado['duracion_s'] = duracion_s
-        self._iptg_estado['completado'] = False
-        self.bomba_iptg = True
+        estado = self._iptg_estado
+        estado['pulsos_hechos'] = 0
+        estado['total_ml'] = 0.0
+        estado['completado'] = False
+        estado['espera_hasta'] = None
+        total_ml = cfg['volumen_pulso_ml'] * cfg['num_pulsos']
+        conc_mM = total_ml * cfg['concentracion_stock_mM'] / cfg['volumen_cultivo_ml']
         mensaje = (
-            f"Inducción iniciada: dosificando {volumen_necesario_ml:.2f} mL de IPTG "
-            f"({duracion_s:.1f}s de bombeo) para alcanzar {cfg['concentracion_final_mM']} mM"
+            f"Inducción iniciada: {cfg['num_pulsos']} pulso(s) de {cfg['volumen_pulso_ml']:.2f} mL de IPTG "
+            f"({total_ml:.2f} mL en total, ≈{conc_mM:.2f} mM en {cfg['volumen_cultivo_ml']} mL)"
         )
         print(f"[IPTG] {mensaje}")
         self._en_hilo_bd(self.registrar_evento_bd, mensaje)
+        self._iniciar_pulso_iptg()
+
+    def _iniciar_pulso_iptg(self):
+        cfg = self.iptg_dosificacion
+        estado = self._iptg_estado
+        estado['duracion_s'] = cfg['volumen_pulso_ml'] / cfg['flujo_bomba_ml_s']
+        estado['inicio_bombeo'] = time.time()
+        estado['bombeando'] = True
+        estado['sensores_antes'] = self.ultimos_datos
+        self._flujo_inicio(3, cfg['volumen_pulso_ml'])
+        self.bomba_iptg = True
+        print(f"[IPTG] Pulso {estado['pulsos_hechos'] + 1}/{cfg['num_pulsos']}: "
+              f"{cfg['volumen_pulso_ml']:.2f} mL ({estado['duracion_s']:.2f} s de bombeo)")
 
     def _gestionar_iptg_dosificacion(self):
-        """Apaga la bomba de IPTG sola cuando se cumple el tiempo de bolo
-        calculado en _iniciar_dosis_iptg -- antes la bomba se quedaba
-        encendida indefinidamente hasta la cosecha."""
+        """Apaga la bomba de IPTG al cumplirse cada pulso, espera 10 s y registra el feedback de
+        los sensores; luego lanza el siguiente pulso o da por completada la inducción."""
         estado = self._iptg_estado
-        if not estado['bombeando']:
-            return
-        if time.time() - estado['inicio_bombeo'] >= estado['duracion_s']:
+        cfg = self.iptg_dosificacion
+        ahora = time.time()
+        if estado['bombeando']:
+            if ahora - estado['inicio_bombeo'] < estado['duracion_s']:
+                return
             self.bomba_iptg = False
             estado['bombeando'] = False
-            estado['completado'] = True
-            print("[IPTG] Dosis de inducción completada, bomba apagada")
-            self._en_hilo_bd(self.registrar_evento_bd, "Dosis de IPTG completada")
+            estado['pulsos_hechos'] += 1
+            estado['total_ml'] += cfg['volumen_pulso_ml']
+            estado['espera_hasta'] = ahora + cfg['espera_feedback_s']
+            msg = (f"Pulso de IPTG {estado['pulsos_hechos']}/{cfg['num_pulsos']} completado: "
+                   f"{cfg['volumen_pulso_ml']:.2f} mL (total {estado['total_ml']:.2f} mL)")
+            print(f"[IPTG] {msg}")
+            self._en_hilo_bd(self.registrar_evento_bd, msg)
+            return
+        if estado['espera_hasta'] is not None and ahora >= estado['espera_hasta']:
+            estado['espera_hasta'] = None
+            self._registrar_feedback("IPTG", estado['sensores_antes'], cfg['espera_feedback_s'])
+            self._flujo_fin(3)
+            if estado['pulsos_hechos'] >= cfg['num_pulsos']:
+                estado['completado'] = True
+                self._en_hilo_bd(self.registrar_evento_bd,
+                                 f"Dosis de IPTG completada ({estado['total_ml']:.2f} mL en total)")
+            else:
+                self._iniciar_pulso_iptg()
+
+    def _revisar_feedback_ph(self):
+        """Tras un pulso de NaOH espera 10 s y registra cómo respondió el pH."""
+        estado = self._ph_estado
+        if estado['feedback_hasta'] is not None and time.time() >= estado['feedback_hasta']:
+            estado['feedback_hasta'] = None
+            self._registrar_feedback("NaOH", estado['sensores_antes'],
+                                     self.ph_dosificacion['espera_feedback_s'])
+            self._flujo_fin(2)
+
+    def _registrar_feedback(self, nombre, antes, espera_s):
+        """Compara las lecturas (temp, pH, OD600) del inicio del pulso contra las actuales."""
+        ahora_d = self.ultimos_datos
+        if not antes or not ahora_d:
+            msg = f"Feedback {nombre} (+{espera_s}s): sin lecturas de sensores disponibles"
+        else:
+            t0, p0, o0 = antes
+            t1, p1, o1 = ahora_d
+            msg = (f"Feedback {nombre} (+{espera_s}s): pH {p0:.2f}→{p1:.2f} ({p1 - p0:+.2f}), "
+                   f"OD600 {o0:.3f}→{o1:.3f} ({o1 - o0:+.3f}), T {t0:.1f}→{t1:.1f} °C")
+        print(f"[FEEDBACK] {msg}")
+        self._en_hilo_bd(self.registrar_evento_bd, msg)
 
     def _iniciar_cosecha(self):
         """Calcula el tiempo de bombeo de cosecha a partir del volumen de
@@ -1912,6 +2066,7 @@ class DashboardApp(ctk.CTk):
         duracion_s = cfg['volumen_cultivo_ml'] / cfg['flujo_bomba_ml_s']
         self._cosecha_estado['inicio_bombeo'] = time.time()
         self._cosecha_estado['duracion_s'] = duracion_s
+        self._flujo_inicio(4, cfg['volumen_cultivo_ml'])
         self.bomba_cosecha = True
         mensaje = f"Cosecha iniciada: {duracion_s/60:.1f} min de bombeo estimados"
         print(f"[Cosecha] {mensaje}")
@@ -1926,6 +2081,7 @@ class DashboardApp(ctk.CTk):
             return
         if time.time() - estado['inicio_bombeo'] >= estado['duracion_s']:
             self.bomba_cosecha = False
+            self._flujo_fin(4)
             self.etapa = "DONE"
             print("[Cosecha] Cosecha completada, bomba apagada. Etapa → DONE")
             self._en_hilo_bd(self.registrar_evento_bd, "Cosecha completada - cultivo listo (etapa DONE)")
@@ -1993,15 +2149,21 @@ class DashboardApp(ctk.CTk):
                 'inicio_bombeo': None,
                 'ultimo_fin_bombeo': None,
                 'total_naoh_ml': 0.0,
+                'feedback_hasta': None,
+                'sensores_antes': None,
             })
             self._iptg_estado.update({
                 'bombeando': False, 'inicio_bombeo': None,
                 'duracion_s': None, 'completado': False, 'pausado_desde': None,
+                'pulsos_hechos': 0, 'total_ml': 0.0,
+                'espera_hasta': None, 'sensores_antes': None,
             })
             self._cosecha_estado.update({
                 'inicio_bombeo': None, 'duracion_s': None, 'pausado_desde': None,
             })
             self._od_consec = {'induccion': 0, 'cosecha': 0}
+            self._flujo_medicion.clear()
+            self._flujo_verif = {n: self._verif_vacia() for n in BOMBAS_DOSIFICACION}
             mostrar_info(self, "Cultivo", "Cultivo iniciado - agitación y aeración activadas (relés 5 y 6 ON)")
 
     def paro_emergencia(self):
@@ -2033,6 +2195,7 @@ class DashboardApp(ctk.CTk):
         # curso simplemente se cancela (son pulsos de pocos segundos, se
         # reintenta solo en el próximo ciclo, bajo riesgo).
         self._ph_estado['bombeando'] = False
+        self._flujo_medicion.clear()
         if self._iptg_estado['bombeando'] and self._iptg_estado['pausado_desde'] is None:
             self._iptg_estado['pausado_desde'] = time.time()
         if self._cosecha_estado['inicio_bombeo'] is not None and self._cosecha_estado['pausado_desde'] is None:
@@ -2228,7 +2391,18 @@ class DashboardApp(ctk.CTk):
         self.enviar_comando("CALGET")
 
     def solicitar_flujo(self):
+        self.solicitar_pulsos(None)
+
+    def solicitar_pulsos(self, callback=None):
+        """Pide el contador de pulsos del sensor de flujo. Las respuestas llegan en orden, así
+        que cada petición deja en la cola su callback (o None); hilo_lectura lo ejecuta con el
+        conteo cuando llega 'FLOW:PULSOS:n'. El callback corre en el hilo serial: sin tocar Tk."""
+        if not (self.serial and self.serial.is_open):
+            return False
+        with self.flujo_lock:
+            self._flow_cbs.append((time.time(), callback))
         self.enviar_comando("FLOW")
+        return True
 
     def consultar_flujo(self):
         """Botón de control manual: pide el estado del sensor de flujo
@@ -2319,6 +2493,291 @@ class DashboardApp(ctk.CTk):
 
         # Pedir confirmación de lo que quedó cargado en el Arduino
         self.after(500, self.solicitar_calibracion_actual)
+
+    # ================= Parámetros de proceso (editables desde el panel) =================
+    def _get_param(self, ruta):
+        partes = ruta.split('.')
+        obj = getattr(self, partes[0])
+        for p in partes[1:]:
+            obj = obj[p]
+        return obj
+
+    def _set_param(self, ruta, valor):
+        partes = ruta.split('.')
+        if len(partes) == 1:
+            setattr(self, partes[0], valor)
+            return
+        obj = getattr(self, partes[0])
+        for p in partes[1:-1]:
+            obj = obj[p]
+        obj[partes[-1]] = valor
+
+    def validar_parametros(self, valores):
+        """Devuelve un texto de error o None. Revisa rangos y coherencia entre parámetros."""
+        v = {r: valores.get(r, self._get_param(r)) for _, _, _, _, r, *_ in ESQUEMA_PARAMETROS}
+        if v['rango_control.temperatura.min'] >= v['rango_control.temperatura.max']:
+            return "La temperatura mínima debe ser menor que la máxima."
+        if v['rango_control.ph.min'] >= v['rango_control.ph.max']:
+            return "El pH mínimo debe ser menor que el máximo."
+        if v['rango_control.od600_induccion'] >= v['rango_control.od600_cosecha']:
+            return "El umbral de inducción debe ser menor que el de cosecha."
+        return None
+
+    def aplicar_parametros(self, valores, bombas_con_sensor=None, registrar=True):
+        cambios = []
+        for ruta, nuevo in valores.items():
+            anterior = self._get_param(ruta)
+            if anterior != nuevo:
+                cambios.append(f"{ruta.split('.')[-1]} {anterior}→{nuevo}")
+            self._set_param(ruta, nuevo)
+        if bombas_con_sensor is not None and sorted(bombas_con_sensor) != sorted(self.flujo_cfg['bombas_con_sensor']):
+            cambios.append(f"bombas_con_sensor {self.flujo_cfg['bombas_con_sensor']}→{sorted(bombas_con_sensor)}")
+            self.flujo_cfg['bombas_con_sensor'] = sorted(bombas_con_sensor)
+        # El volumen vigente del pulso de NaOH sigue al valor base mientras no se haya duplicado.
+        est = self._ph_estado
+        if not est['bombeando'] and est['dosis_consecutivas'] == 0:
+            est['volumen_actual_ml'] = self.ph_dosificacion['volumen_base_ml']
+        self.guardar_parametros()
+        if cambios and registrar:
+            self._en_hilo_bd(self.registrar_evento_bd, ("Parámetros modificados: " + "; ".join(cambios))[:250])
+        return cambios
+
+    def guardar_parametros(self):
+        datos = {ruta: self._get_param(ruta) for _, _, _, _, ruta, *_ in ESQUEMA_PARAMETROS}
+        datos['flujo_cfg.bombas_con_sensor'] = list(self.flujo_cfg['bombas_con_sensor'])
+        datos['flujo_cfg.sensor_validado'] = bool(self.flujo_cfg['sensor_validado'])
+        try:
+            import json
+            with open(PARAMS_ARCHIVO, "w", encoding="utf-8") as f:
+                json.dump(datos, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            print(f"[PARAMS] No se pudo guardar {PARAMS_ARCHIVO}: {e}")
+
+    def cargar_parametros(self):
+        """Carga parametros_proceso.json (si existe) sobre los valores por defecto del código."""
+        import json
+        if not os.path.exists(PARAMS_ARCHIVO):
+            return
+        try:
+            with open(PARAMS_ARCHIVO, encoding="utf-8") as f:
+                datos = json.load(f)
+        except Exception as e:
+            print(f"[PARAMS] No se pudo leer {PARAMS_ARCHIVO}: {e}")
+            return
+        cargados = {}
+        for _, _, _, _, ruta, minimo, maximo, entero in ESQUEMA_PARAMETROS:
+            if ruta in datos:
+                try:
+                    val = int(datos[ruta]) if entero else float(datos[ruta])
+                    if minimo <= val <= maximo:
+                        cargados[ruta] = val
+                except (TypeError, ValueError):
+                    pass
+        if self.validar_parametros(cargados) is None:
+            for ruta, val in cargados.items():
+                self._set_param(ruta, val)
+        bombas = datos.get('flujo_cfg.bombas_con_sensor')
+        if isinstance(bombas, list):
+            self.flujo_cfg['bombas_con_sensor'] = [b for b in bombas if b in BOMBAS_DOSIFICACION]
+        self.flujo_cfg['sensor_validado'] = bool(datos.get('flujo_cfg.sensor_validado', False))
+        self._ph_estado['volumen_actual_ml'] = self.ph_dosificacion['volumen_base_ml']
+        print(f"[PARAMS] Parámetros cargados de {PARAMS_ARCHIVO}")
+
+    # ================= Medición de volumen con el sensor de flujo =================
+    @staticmethod
+    def _verif_vacia():
+        return {'esperado_ml_acum': 0.0, 'pulsos_acum': 0, 'veredicto': 'SIN DATOS',
+                'ultimo_esperado_ml': None, 'ultimo_medido_ml': None, 'detalle': ''}
+
+    def _flujo_inicio(self, num, esperado_ml):
+        """Al arrancar un pulso: guarda el conteo de pulsos del sensor (si esa línea tiene sensor).
+        Se llama ANTES de enviar el relé ON, así el FLOW llega al Arduino antes que el arranque."""
+        if num not in self.flujo_cfg['bombas_con_sensor']:
+            return
+        med = {'ini': None, 'esperado_ml': esperado_ml}
+        self._flujo_medicion[num] = med
+        if not self.solicitar_pulsos(lambda n, m=med: m.__setitem__('ini', n)):
+            self._flujo_medicion.pop(num, None)
+
+    def _flujo_fin(self, num):
+        if num in self._flujo_medicion:
+            self.solicitar_pulsos(lambda n, k=num: self._evaluar_flujo(k, n))
+
+    def _evaluar_flujo(self, num, pulsos_fin):
+        """Compara lo dosificado contra lo que contó el sensor. Con 1.38 pulsos/mL un pulso de 1 mL
+        solo da 1-2 pulsos (±0.7 mL), así que hay DOS niveles de veredicto:
+          · VOLUMEN (OK / FUERA DE TOLERANCIA / SIN FLUJO): cuando los pulsos esperados acumulados
+            llegan a 'min_pulsos_verif'.
+          · PRESENCIA (FLUJO DETECTADO / SIN FLUJO): por cada dosis, solo si el sensor está
+            VALIDADO (una prueba demostró que cuenta pulsos a este caudal). Sin validar, no se
+            alarma: un sensor que no gira a caudal bajo daría cero pulsos con la bomba sana."""
+        med = self._flujo_medicion.pop(num, None)
+        if not med or med['ini'] is None:
+            return
+        cfg = self.flujo_cfg
+        k_ml = cfg['pulsos_por_litro'] / 1000.0          # pulsos por mL
+        delta = max(0, pulsos_fin - med['ini'])
+        v = self._flujo_verif[num]
+        v['esperado_ml_acum'] += med['esperado_ml']
+        v['pulsos_acum'] += delta
+        v['ultimo_esperado_ml'] = med['esperado_ml']
+        v['ultimo_medido_ml'] = delta / k_ml
+        nombre = BOMBAS_DOSIFICACION[num][0]
+        esperados_dosis = med['esperado_ml'] * k_ml
+        resolucion = 1.0 / k_ml
+        problema = False
+        if v['esperado_ml_acum'] * k_ml >= cfg['min_pulsos_verif']:
+            medido = v['pulsos_acum'] / k_ml
+            esperado = v['esperado_ml_acum']
+            desv = (medido - esperado) / esperado * 100
+            if v['pulsos_acum'] == 0:
+                v['veredicto'] = 'SIN FLUJO'
+            elif abs(desv) <= cfg['tolerancia_pct']:
+                v['veredicto'] = 'OK'
+            else:
+                v['veredicto'] = 'FUERA DE TOLERANCIA'
+            v['detalle'] = f"esperado {esperado:.2f} mL, medido {medido:.2f} mL ({desv:+.0f}%)"
+            v['esperado_ml_acum'] = 0.0
+            v['pulsos_acum'] = 0
+            problema = v['veredicto'] != 'OK'
+        elif cfg['sensor_validado'] and esperados_dosis >= 1.0:
+            if delta == 0:
+                v['veredicto'] = 'SIN FLUJO'
+                v['detalle'] = f"0 pulsos (esperados ≈ {esperados_dosis:.1f})"
+                v['esperado_ml_acum'] = 0.0
+                v['pulsos_acum'] = 0
+                problema = True
+            else:
+                v['veredicto'] = 'FLUJO DETECTADO'
+                v['detalle'] = (f"{delta} pulsos ≈ {delta / k_ml:.1f} mL (±{resolucion:.1f} mL; resolución "
+                                "insuficiente para validar el volumen exacto)")
+        else:
+            v['veredicto'] = 'ACUMULANDO'
+            razon = "" if cfg['sensor_validado'] else " · sensor SIN VALIDAR"
+            v['detalle'] = (f"{v['pulsos_acum']} pulsos, se necesitan ≥{cfg['min_pulsos_verif']} esperados "
+                            f"(resolución {k_ml:.2f} pulsos/mL){razon}")
+        msg = f"Verificación de flujo {nombre}: {v['veredicto']} - {v['detalle']}"
+        print(f"[FLUJO] {msg}")
+        self._en_hilo_bd(self.registrar_evento_bd, msg)
+        if problema and cfg['sensor_validado']:
+            self._avisos_pendientes.append((num, (
+                f"La verificación de la bomba de {nombre} dio '{v['veredicto']}': {v['detalle']}.\n\n"
+                "Revisa que el reservorio no esté vacío, que la manguera no esté doblada o con aire "
+                "y que la bomba gire. Si la dosis no llegó al cultivo, la inducción puede haber fallado.")))
+
+    # ================= Prueba de bombas (calibración de caudal) =================
+    def iniciar_prueba_bomba(self, num, segundos):
+        """Enciende una bomba 'segundos' con el cultivo detenido. Devuelve un texto de error o None."""
+        if not (self.serial and self.serial.is_open):
+            return "Conecta primero el Arduino."
+        if self.emergencia or self.pausado:
+            return "Hay un paro de emergencia activo."
+        if self.etapa not in ("READY", "DONE"):
+            return "Solo se puede probar una bomba con el cultivo detenido (etapa READY o DONE)."
+        if self._prueba_bomba and not self._prueba_bomba['terminada']:
+            return "Ya hay una prueba en curso."
+        prueba = {'num': num, 'segundos': segundos, 'fin': time.time() + segundos, 'ini': None,
+                  'pulsos': None, 'terminada': False, 'cancelada': False, 'apagada_en': None}
+        self._prueba_bomba = prueba
+        self.solicitar_pulsos(lambda n, p=prueba: p.__setitem__('ini', n))
+        setattr(self, BOMBAS_DOSIFICACION[num][2], True)
+        self.rele_estados[num] = True
+        self._enviar_estado_reles()
+        return None
+
+    def _vigilar_prueba_bomba(self):
+        p = self._prueba_bomba
+        if not p or p['terminada']:
+            return
+        ahora = time.time()
+        if self.emergencia or self.pausado:
+            p['terminada'] = p['cancelada'] = True
+            return
+        if p['fin'] is not None and ahora >= p['fin']:
+            p['fin'] = None
+            p['apagada_en'] = ahora
+            setattr(self, BOMBAS_DOSIFICACION[p['num']][2], False)
+            self.rele_estados[p['num']] = False
+            self._enviar_estado_reles()
+
+            def cb_fin(n, pr=p):
+                if pr['ini'] is not None:
+                    pr['pulsos'] = max(0, n - pr['ini'])
+                pr['terminada'] = True
+            # 1.5 s después para contar los pulsos que aún caen tras apagar la bomba
+            self.after(1500, lambda: self.solicitar_pulsos(cb_fin))
+        elif p['apagada_en'] is not None and ahora - p['apagada_en'] > 6:
+            p['terminada'] = True   # el sensor no respondió
+
+    # ================= Diagnóstico del equipo =================
+    def diagnostico_equipo(self):
+        """Lista de (nombre, texto, nivel) con nivel 'ok' | 'aviso' | 'error'."""
+        filas = []
+        conectado = bool(self.serial and self.serial.is_open)
+        filas.append(("Conexión serial", "Arduino conectado" if conectado else "Desconectado",
+                      "ok" if conectado else "error"))
+        ts = self._ultima_telemetria_ts
+        if ts is None:
+            filas.append(("Telemetría", "Aún no llega ninguna lectura", "error" if conectado else "aviso"))
+        else:
+            edad = time.time() - ts
+            filas.append(("Telemetría", f"Última lectura hace {edad:.0f} s",
+                          "ok" if edad < 3 else ("aviso" if edad < 10 else "error")))
+        ud = self.ultimos_datos
+        if ud:
+            temp, ph, od = ud
+            for nombre, valor, lo, hi, fmt in (("Temperatura", temp, 0, 100, f"{temp:.1f} °C"),
+                                               ("pH", ph, 0, 14, f"{ph:.2f}"),
+                                               ("OD600", od, -0.2, 6, f"{od:.3f}")):
+                ok = lo <= valor <= hi
+                filas.append((nombre, fmt if ok else f"{fmt} · fuera de rango físico (¿sensor desconectado?)",
+                              "ok" if ok else "error"))
+        with self.flujo_lock:
+            pulsos = self.flujo_pulsos
+            alertas = list(self.alertas_flujo.keys())
+        k_ml = self.flujo_cfg['pulsos_por_litro'] / 1000.0
+        validado = self.flujo_cfg['sensor_validado']
+        filas.append(("Sensor de flujo", f"{pulsos} pulsos acumulados · K = {self.flujo_cfg['pulsos_por_litro']:.0f} pulsos/L "
+                      f"({k_ml:.2f} pulsos/mL, ±{1 / k_ml:.2f} mL por pulso)", "ok"))
+        filas.append(("Validación del sensor",
+                      "VALIDADO: contó pulsos a este caudal en la prueba" if validado else
+                      "SIN VALIDAR: haz una prueba de 60 s de la bomba de IPTG en Calibración → Bombas y flujo; "
+                      "mientras tanto no genera alarmas",
+                      "ok" if validado else "aviso"))
+        for n_s in self.flujo_cfg['bombas_con_sensor']:
+            nom_s, cfg_s, _ = BOMBAS_DOSIFICACION[n_s]
+            lpm = getattr(self, cfg_s)['flujo_bomba_ml_s'] * 60 / 1000.0
+            minimo = self.flujo_cfg['rango_min_lpm']
+            if lpm < minimo:
+                filas.append(("Caudal vs. sensor",
+                              f"La bomba de {nom_s} mueve {lpm:.3f} L/min, por debajo del mínimo del sensor "
+                              f"({minimo} L/min): las lecturas pueden ser poco confiables", "aviso"))
+        if alertas:
+            nombres = ", ".join(BOMBAS_DOSIFICACION.get(n, (f"relé {n}",))[0] for n in alertas)
+            filas.append(("Alarma de flujo", f"Bomba sin flujo: {nombres}", "error"))
+        totales = {2: f"{self._ph_estado['total_naoh_ml']:.2f} mL dosificados",
+                   3: f"{self._iptg_estado['total_ml']:.2f} mL dosificados", 4: ""}
+        for num, (nombre, _, attr) in BOMBAS_DOSIFICACION.items():
+            partes = ["ENCENDIDA" if getattr(self, attr) else "apagada"]
+            if totales[num]:
+                partes.append(totales[num])
+            if num in self.flujo_cfg['bombas_con_sensor']:
+                v = self._flujo_verif[num]
+                nivel = {'OK': 'ok', 'ACUMULANDO': 'ok', 'SIN DATOS': 'aviso'}.get(v['veredicto'], 'error')
+                partes.append(f"verificación: {v['veredicto']}" + (f" ({v['detalle']})" if v['detalle'] else ""))
+            else:
+                nivel = "aviso"
+                partes.append("sin sensor de flujo en esta línea (no verificable)")
+            filas.append((f"Bomba {nombre}", " · ".join(partes), nivel))
+        filas.append(("Calefactor", "ENCENDIDO" if self.rele_estados.get(1) else "apagado", "ok"))
+        return filas
+
+    def abrir_parametros(self, pestana=None):
+        if self.ventana_parametros is not None and self.ventana_parametros.winfo_exists():
+            self.ventana_parametros.lift()
+            self.ventana_parametros.focus_force()
+            return
+        self.ventana_parametros = ParametrosWindow(self, pestana)
 
     def abrir_calibracion(self):
         if not (self.serial and self.serial.is_open):
@@ -2423,10 +2882,13 @@ class CalibracionWindow(ctk.CTkToplevel):
         self.tab_ph = tabview.add("pH")
         self.tab_od = tabview.add("OD600 (Turbidez)")
         self.tab_temp = tabview.add("Temperatura")
+        self.tab_bombas = tabview.add("Bombas y flujo")
+        self._pruebas_ui = {}
 
         self._construir_tab_ph()
         self._construir_tab_od()
         self._construir_tab_temp()
+        self._construir_tab_bombas()
 
         # Refrescar la calibración vigente en el Arduino al abrir
         self.app.solicitar_calibracion_actual()
@@ -2916,6 +3378,190 @@ class CalibracionWindow(ctk.CTkToplevel):
 
         self.after(500, self._mostrar_calibracion_vigente)
 
+    # ---------- Bombas y sensor de flujo ----------
+    def _construir_tab_bombas(self):
+        t = self.tab_bombas
+        ctk.CTkLabel(t, text="Calibración de bombas y sensor de flujo", font=(FUENTE, 16, "bold")).pack(pady=(8, 2))
+        ctk.CTkLabel(
+            t, justify="left",
+            text="Con agua y el cultivo detenido: pon la manguera de salida en una probeta, elige el tiempo y\n"
+                 "presiona 'Probar'. Escribe los mL que cayeron en la probeta y aplica el caudal. En la línea que\n"
+                 "tiene el sensor de flujo, 'Calibrar K' ajusta los pulsos por litro con ese mismo volumen."
+        ).pack(pady=(0, 6))
+        self.lbl_resolucion = ctk.CTkLabel(t, text="", text_color=COLOR_TEXTO_SUAVE)
+        self.lbl_resolucion.pack(pady=(0, 6))
+        cont = ctk.CTkScrollableFrame(t)
+        cont.pack(fill="both", expand=True, padx=6, pady=4)
+        for num, (nombre, cfg_attr, _) in BOMBAS_DOSIFICACION.items():
+            fr = ctk.CTkFrame(cont)
+            fr.pack(fill="x", pady=6, padx=4)
+            ui = {}
+            ui['titulo'] = ctk.CTkLabel(fr, text="", font=(FUENTE, 14, "bold"))
+            ui['titulo'].pack(anchor="w", padx=10, pady=(8, 2))
+            f1 = ctk.CTkFrame(fr, fg_color="transparent")
+            f1.pack(fill="x", padx=10, pady=2)
+            ctk.CTkLabel(f1, text="Tiempo de prueba (s):").pack(side="left")
+            ui['seg'] = ctk.CTkEntry(f1, width=70)
+            ui['seg'].insert(0, "60" if num in self.app.flujo_cfg['bombas_con_sensor'] else "10")
+            ui['seg'].pack(side="left", padx=6)
+            ui['btn_probar'] = ctk.CTkButton(f1, text="▶ Probar bomba", width=130,
+                                             command=lambda n=num: self._probar_bomba(n))
+            ui['btn_probar'].pack(side="left", padx=6)
+            ui['lbl_estado'] = ctk.CTkLabel(f1, text="")
+            ui['lbl_estado'].pack(side="left", padx=6)
+            f2 = ctk.CTkFrame(fr, fg_color="transparent")
+            f2.pack(fill="x", padx=10, pady=2)
+            ctk.CTkLabel(f2, text="Volumen en probeta (mL):").pack(side="left")
+            ui['probeta'] = ctk.CTkEntry(f2, width=80)
+            ui['probeta'].pack(side="left", padx=6)
+            ui['lbl_sensor'] = ctk.CTkLabel(f2, text="Sensor de flujo: ---")
+            ui['lbl_sensor'].pack(side="left", padx=10)
+            f3 = ctk.CTkFrame(fr, fg_color="transparent")
+            f3.pack(fill="x", padx=10, pady=(2, 8))
+            ui['btn_caudal'] = ctk.CTkButton(f3, text="Aplicar caudal", width=130, fg_color=COLOR_VERDE,
+                                             hover_color=COLOR_VERDE_HOVER,
+                                             command=lambda n=num: self._aplicar_caudal(n))
+            ui['btn_caudal'].pack(side="left")
+            ui['btn_k'] = ctk.CTkButton(f3, text="Calibrar K del sensor", width=160, fg_color="#7b1fa2",
+                                        hover_color="#6a1b9a", command=lambda n=num: self._calibrar_k(n))
+            ui['btn_k'].pack(side="left", padx=8)
+            ui['lbl_res'] = ctk.CTkLabel(f3, text="")
+            ui['lbl_res'].pack(side="left", padx=8)
+            self._pruebas_ui[num] = ui
+        self._refrescar_tab_bombas()
+
+    def _refrescar_tab_bombas(self):
+        cfg = self.app.flujo_cfg
+        k_ml = cfg['pulsos_por_litro'] / 1000.0
+        vol_pulso = self.app.iptg_dosificacion['volumen_pulso_ml']
+        self.lbl_resolucion.configure(
+            text=f"Sensor de flujo: K = {cfg['pulsos_por_litro']:.0f} pulsos/L = {k_ml:.2f} pulsos/mL  "
+                 f"(un pulso de {vol_pulso:g} mL ≈ {vol_pulso * k_ml:.1f} pulsos)")
+        for num, (nombre, cfg_attr, _) in BOMBAS_DOSIFICACION.items():
+            ui = self._pruebas_ui[num]
+            caudal = getattr(self.app, cfg_attr)['flujo_bomba_ml_s']
+            con_sensor = num in cfg['bombas_con_sensor']
+            ui['titulo'].configure(text=f"{nombre} · caudal actual {caudal:.3f} mL/s"
+                                        + ("  ·  con sensor de flujo" if con_sensor else ""))
+            if con_sensor:
+                ui['btn_k'].pack(side="left", padx=8, before=ui['lbl_res'])
+            else:
+                ui['btn_k'].pack_forget()
+
+    def _probar_bomba(self, num):
+        ui = self._pruebas_ui[num]
+        try:
+            seg = float(ui['seg'].get().replace(",", "."))
+            if not 1 <= seg <= 120:
+                raise ValueError
+        except ValueError:
+            mostrar_error(self, "Prueba de bomba", "El tiempo debe estar entre 1 y 120 segundos.")
+            return
+        error = self.app.iniciar_prueba_bomba(num, seg)
+        if error:
+            mostrar_aviso(self, "Prueba de bomba", error)
+            return
+        ui['btn_probar'].configure(state="disabled")
+        ui['lbl_res'].configure(text="")
+        self._seguir_prueba(num)
+
+    def _seguir_prueba(self, num):
+        if not self.winfo_exists():
+            return
+        ui = self._pruebas_ui[num]
+        p = self.app._prueba_bomba
+        if not p or p['num'] != num:
+            ui['btn_probar'].configure(state="normal")
+            return
+        if not p['terminada']:
+            restante = max(0, (p['fin'] or time.time()) - time.time())
+            ui['lbl_estado'].configure(text=f"Bombeando… {restante:.0f} s" if p['fin'] else "Contando pulsos…")
+            self.after(300, lambda: self._seguir_prueba(num))
+            return
+        ui['btn_probar'].configure(state="normal")
+        if p['cancelada']:
+            ui['lbl_estado'].configure(text="Prueba cancelada")
+            return
+        ui['lbl_estado'].configure(text="Prueba terminada")
+        if num in self.app.flujo_cfg['bombas_con_sensor'] and p['pulsos'] is not None:
+            k_ml = self.app.flujo_cfg['pulsos_por_litro'] / 1000.0
+            cfg = self.app.flujo_cfg
+            ml = p['pulsos'] / k_ml
+            if p['pulsos'] >= cfg['min_pulsos_validacion']:
+                cfg['sensor_validado'] = True
+                precision = 100.0 / p['pulsos']
+                ui['lbl_sensor'].configure(
+                    text=f"Sensor: {p['pulsos']} pulsos ≈ {ml:.2f} mL (±{precision:.0f}%) → "
+                         f"{ml / p['segundos']:.3f} mL/s")
+                ui['lbl_res'].configure(text="Sensor VALIDADO ✓")
+            else:
+                cfg['sensor_validado'] = False
+                esperados = getattr(self.app, BOMBAS_DOSIFICACION[num][1])['flujo_bomba_ml_s'] * p['segundos'] * k_ml
+                ui['lbl_sensor'].configure(text=f"Sensor: {p['pulsos']} pulsos (esperados ≈ {esperados:.0f})")
+                ui['lbl_res'].configure(
+                    text=f"Sensor NO validado: contó < {cfg['min_pulsos_validacion']} pulsos")
+            self.app.guardar_parametros()
+        else:
+            ui['lbl_sensor'].configure(text="Sensor de flujo: sin sensor en esta línea")
+
+    def _volumen_de_prueba(self, num):
+        """mL de la prueba: el de la probeta si se escribió; si no, el del sensor de flujo."""
+        ui = self._pruebas_ui[num]
+        p = self.app._prueba_bomba
+        if not p or p['num'] != num or not p['terminada'] or p['cancelada']:
+            return None, None, "Primero corre una prueba de esta bomba."
+        texto = ui['probeta'].get().strip().replace(",", ".")
+        if texto:
+            try:
+                return float(texto), p, None
+            except ValueError:
+                return None, None, "El volumen de la probeta no es un número."
+        if num in self.app.flujo_cfg['bombas_con_sensor'] and p['pulsos']:
+            return p['pulsos'] / (self.app.flujo_cfg['pulsos_por_litro'] / 1000.0), p, None
+        return None, None, "Escribe los mL de la probeta (esta línea no tiene sensor de flujo o no contó pulsos)."
+
+    def _aplicar_caudal(self, num):
+        vol, p, err = self._volumen_de_prueba(num)
+        if err or not vol or vol <= 0:
+            mostrar_error(self, "Calibración de bomba", err or "El volumen debe ser mayor que cero.")
+            return
+        caudal = vol / p['segundos']
+        nombre, cfg_attr, _ = BOMBAS_DOSIFICACION[num]
+        anterior = getattr(self.app, cfg_attr)['flujo_bomba_ml_s']
+        getattr(self.app, cfg_attr)['flujo_bomba_ml_s'] = caudal
+        self.app.guardar_parametros()
+        self.app._en_hilo_bd(self.app.registrar_evento_bd,
+                             f"Calibración de bomba {nombre}: {anterior:.3f} → {caudal:.3f} mL/s "
+                             f"({vol:.2f} mL en {p['segundos']:.0f} s)")
+        self._pruebas_ui[num]['lbl_res'].configure(text=f"Caudal aplicado: {caudal:.3f} mL/s")
+        self._refrescar_tab_bombas()
+
+    def _calibrar_k(self, num):
+        ui = self._pruebas_ui[num]
+        p = self.app._prueba_bomba
+        texto = ui['probeta'].get().strip().replace(",", ".")
+        try:
+            vol = float(texto)
+        except ValueError:
+            vol = None
+        if not p or p['num'] != num or not p['terminada'] or p['cancelada'] or p['pulsos'] is None:
+            mostrar_error(self, "Calibrar K", "Primero corre una prueba de esta bomba con el sensor conectado.")
+            return
+        if not vol or vol <= 0 or p['pulsos'] <= 0:
+            mostrar_error(self, "Calibrar K",
+                          "Escribe los mL de la probeta y verifica que el sensor haya contado pulsos "
+                          f"(contó {p['pulsos']}).")
+            return
+        k = p['pulsos'] / vol * 1000.0
+        anterior = self.app.flujo_cfg['pulsos_por_litro']
+        self.app.flujo_cfg['pulsos_por_litro'] = k
+        self.app.guardar_parametros()
+        self.app._en_hilo_bd(self.app.registrar_evento_bd,
+                             f"Calibración del sensor de flujo: K {anterior:.0f} → {k:.0f} pulsos/L "
+                             f"({p['pulsos']} pulsos con {vol:.2f} mL)")
+        ui['lbl_res'].configure(text=f"K = {k:.0f} pulsos/L")
+        self._refrescar_tab_bombas()
+
     def _mostrar_calibracion_vigente(self):
         if not self.winfo_exists():
             return
@@ -2933,6 +3579,153 @@ class CalibracionWindow(ctk.CTkToplevel):
         if temp.get('offset') is not None:
             self.lbl_cal_temp_vigente.configure(
                 text=f"Offset vigente en Arduino: {temp['offset']:.4f} °C")
+
+
+class ParametrosWindow(ctk.CTkToplevel):
+    """Panel para editar todos los parámetros de dosificación, control y sensor de flujo, y
+    ver el diagnóstico del equipo. Los cambios se aplican al instante y se guardan en
+    parametros_proceso.json (se cargan solos al abrir la app)."""
+
+    COLORES_NIVEL = {"ok": COLOR_VERDE, "aviso": COLOR_AMARILLO, "error": COLOR_ROJO}
+    ICONOS_NIVEL = {"ok": "●", "aviso": "▲", "error": "✕"}
+
+    def __init__(self, app, pestana=None):
+        super().__init__(app)
+        self.app = app
+        self.title("Parámetros de proceso y diagnóstico")
+        ancho_p, alto_p = self.winfo_screenwidth(), self.winfo_screenheight()
+        ancho = min(900, max(700, int(ancho_p * 0.5)))
+        alto = min(820, max(620, int(alto_p * 0.8)))
+        self.geometry(f"{ancho}x{alto}+{(ancho_p - ancho) // 2}+{(alto_p - alto) // 2}")
+        self.minsize(640, 560)
+        self.transient(app)
+        self.entradas = {}
+        self.vars_bombas = {}
+
+        self.tabs = ctk.CTkTabview(self)
+        self.tabs.pack(fill="both", expand=True, padx=14, pady=(14, 6))
+        pestanas = []
+        for p, *_ in ESQUEMA_PARAMETROS:
+            if p not in pestanas:
+                pestanas.append(p)
+        for p in pestanas:
+            self._construir_pestana(self.tabs.add(p), p)
+        self.tab_diag = self.tabs.add("Diagnóstico")
+        self.diag_frame = ctk.CTkScrollableFrame(self.tab_diag)
+        self.diag_frame.pack(fill="both", expand=True)
+        if pestana:
+            self.tabs.set(pestana)
+
+        barra = ctk.CTkFrame(self, fg_color="transparent")
+        barra.pack(fill="x", padx=14, pady=(0, 12))
+        ctk.CTkButton(barra, text="Guardar y aplicar", fg_color=COLOR_VERDE, hover_color=COLOR_VERDE_HOVER,
+                      command=self.guardar).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(barra, text="Descartar cambios", fg_color=COLOR_PANEL, hover_color="#1c3a66",
+                      command=self.recargar).pack(side="left", padx=8)
+        ctk.CTkButton(barra, text="Cerrar", fg_color=COLOR_PANEL, hover_color="#1c3a66",
+                      command=self.destroy).pack(side="right")
+        self.recargar()
+        self._refrescar_diagnostico()
+
+    def _construir_pestana(self, tab, nombre_pestana):
+        marco = ctk.CTkScrollableFrame(tab)
+        marco.pack(fill="both", expand=True)
+        grupo_actual = None
+        fila = 0
+        for p, grupo, etiqueta, unidad, ruta, minimo, maximo, entero in ESQUEMA_PARAMETROS:
+            if p != nombre_pestana:
+                continue
+            if grupo != grupo_actual:
+                grupo_actual = grupo
+                ctk.CTkLabel(marco, text=grupo, font=(FUENTE, 14, "bold"), text_color=COLOR_AZUL
+                             ).grid(row=fila, column=0, columnspan=4, sticky="w", padx=6, pady=(12, 4))
+                fila += 1
+            ctk.CTkLabel(marco, text=etiqueta, anchor="w").grid(row=fila, column=0, sticky="w", padx=(18, 8), pady=3)
+            e = ctk.CTkEntry(marco, width=100)
+            e.grid(row=fila, column=1, padx=4, pady=3)
+            ctk.CTkLabel(marco, text=unidad, width=60, anchor="w").grid(row=fila, column=2, sticky="w")
+            ctk.CTkLabel(marco, text=f"({minimo:g} – {maximo:,.0f})" if maximo >= 1000 else f"({minimo:g} – {maximo:g})", text_color=COLOR_TEXTO_SUAVE
+                         ).grid(row=fila, column=3, sticky="w", padx=6)
+            self.entradas[ruta] = e
+            fila += 1
+        if nombre_pestana == "Flujo":
+            ctk.CTkLabel(marco, text="Líneas que pasan por el sensor de flujo", font=(FUENTE, 14, "bold"),
+                         text_color=COLOR_AZUL).grid(row=fila, column=0, columnspan=4, sticky="w", padx=6, pady=(14, 4))
+            fila += 1
+            for num, (nombre, _, _) in BOMBAS_DOSIFICACION.items():
+                var = tk.BooleanVar(value=False)
+                ctk.CTkCheckBox(marco, text=f"Bomba {nombre}", variable=var
+                                ).grid(row=fila, column=0, columnspan=3, sticky="w", padx=18, pady=3)
+                self.vars_bombas[num] = var
+                fila += 1
+            ctk.CTkLabel(
+                marco, justify="left", text_color=COLOR_TEXTO_SUAVE,
+                text="Marca solo las líneas por donde físicamente pasa el sensor. Un solo sensor mide una línea:\n"
+                     "las demás bombas se muestran como 'no verificables' en el diagnóstico."
+            ).grid(row=fila, column=0, columnspan=4, sticky="w", padx=18, pady=(6, 0))
+
+    def recargar(self):
+        for ruta, e in self.entradas.items():
+            e.delete(0, "end")
+            e.insert(0, f"{self.app._get_param(ruta):g}")
+        for num, var in self.vars_bombas.items():
+            var.set(num in self.app.flujo_cfg['bombas_con_sensor'])
+
+    def guardar(self):
+        valores, errores = {}, []
+        for _, _, etiqueta, _, ruta, minimo, maximo, entero in ESQUEMA_PARAMETROS:
+            texto = self.entradas[ruta].get().strip().replace(",", ".")
+            try:
+                val = float(texto)
+                if entero:
+                    if val != int(val):
+                        raise ValueError
+                    val = int(val)
+            except ValueError:
+                errores.append(f"'{etiqueta}': valor no válido")
+                continue
+            if not minimo <= val <= maximo:
+                errores.append(f"'{etiqueta}': debe estar entre {minimo:g} y {maximo:g}")
+                continue
+            valores[ruta] = val
+        if not errores:
+            cruzado = self.app.validar_parametros(valores)
+            if cruzado:
+                errores.append(cruzado)
+        if errores:
+            mostrar_error(self, "Parámetros no válidos", "\n".join(errores[:6]))
+            return
+        bombas = [n for n, v in self.vars_bombas.items() if v.get()]
+        cambios = self.app.aplicar_parametros(valores, bombas)
+        if self.app.ventana_calibracion is not None and self.app.ventana_calibracion.winfo_exists():
+            self.app.ventana_calibracion._refrescar_tab_bombas()
+        mostrar_exito(self, "Parámetros", f"{len(cambios)} cambio(s) aplicados y guardados." if cambios
+                      else "No había cambios que aplicar.")
+
+    def _refrescar_diagnostico(self):
+        if not self.winfo_exists():
+            return
+        try:
+            for w in self.diag_frame.winfo_children():
+                w.destroy()
+            filas = self.app.diagnostico_equipo()
+            peor = "error" if any(n == "error" for _, _, n in filas) else (
+                "aviso" if any(n == "aviso" for _, _, n in filas) else "ok")
+            titulo = {"ok": "EQUIPO FUNCIONANDO CORRECTAMENTE", "aviso": "EQUIPO OK CON AVISOS",
+                      "error": "HAY PROBLEMAS EN EL EQUIPO"}[peor]
+            ctk.CTkLabel(self.diag_frame, text=f"{self.ICONOS_NIVEL[peor]}  {titulo}",
+                         font=(FUENTE, 16, "bold"), text_color=self.COLORES_NIVEL[peor]
+                         ).pack(anchor="w", padx=8, pady=(6, 10))
+            for nombre, texto, nivel in filas:
+                f = ctk.CTkFrame(self.diag_frame, fg_color="transparent")
+                f.pack(fill="x", padx=8, pady=2)
+                ctk.CTkLabel(f, text=self.ICONOS_NIVEL[nivel], text_color=self.COLORES_NIVEL[nivel],
+                             width=24).pack(side="left")
+                ctk.CTkLabel(f, text=nombre, width=150, anchor="w", font=(FUENTE, 12, "bold")).pack(side="left")
+                ctk.CTkLabel(f, text=texto, anchor="w", justify="left", wraplength=520).pack(side="left", padx=6)
+        except Exception as e:
+            print(f"[DIAGNÓSTICO] {e}")
+        self.after(1000, self._refrescar_diagnostico)
 
 
 if __name__ == "__main__":
