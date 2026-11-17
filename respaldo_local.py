@@ -76,7 +76,7 @@ TZ_TIJUANA = ZoneInfo("America/Tijuana")
 CARPETA_RESPALDO = "respaldo_bioreactor"
 COLUMNAS = [
     "fecha_hora", "temperatura", "ph", "od600",
-    "rele1", "rele2", "rele3", "rele4", "rele5", "rele6",
+    "rele1", "rele2", "rele3", "rele4", "rele5", "rele6", "rele7",
     "etapa", "sincronizado",
 ]
 
@@ -148,12 +148,12 @@ class RespaldoLocal:
                     cursor.execute(
                         f"""INSERT INTO {tabla}
                             (temperatura, ph, od600, fecha_hora,
-                             rele1, rele2, rele3, rele4, rele5, rele6)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                             rele1, rele2, rele3, rele4, rele5, rele6, rele7)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                         (
                             fila["temperatura"], fila["ph"], fila["od600"], fila["fecha_hora"],
                             fila["rele1"], fila["rele2"], fila["rele3"],
-                            fila["rele4"], fila["rele5"], fila["rele6"],
+                            fila["rele4"], fila["rele5"], fila["rele6"], fila.get("rele7", 0),
                         ),
                     )
                     sincronizadas += 1

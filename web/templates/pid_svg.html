@@ -39,7 +39,13 @@
   <line id="pid-line-rele4b" x1="445" y1="292.5" x2="475" y2="327.5" stroke="#555555" stroke-width="2"/>
   <circle id="pid-bottle" cx="475" cy="345" r="17.5" fill="#2c3e50" stroke="#ffffff"/>
 
-  <!-- Instrumentos (ISA): pH, temperatura, OD600 y flujo. OD600 va SUMERGIDO: no hay bomba de OD. -->
+  <!-- Bomba de OD (rele7): toma muestra del tanque hacia el módulo óptico; el sensor de flujo va en su línea -->
+  <circle id="pid-rele7" cx="445" cy="60" r="25" fill="#555555" stroke="#ffffff" stroke-width="1.5"/>
+  <text x="445" y="66" text-anchor="middle" font-size="16">⟳</text>
+  <text x="445" y="98" text-anchor="middle" fill="#ffffff" font-size="10">Bomba OD</text>
+  <line id="pid-line-rele7" x1="420" y1="60" x2="320" y2="150" stroke="#555555" stroke-width="2"/>
+
+  <!-- Instrumentos (ISA): pH, temperatura, OD600 y flujo. La bomba de OD renueva la muestra del sensor óptico. -->
   <g font-family="sans-serif" text-anchor="middle">
     <!-- pH: AIT-101 -->
     <line x1="133" y1="232" x2="180" y2="232" stroke="#8fa3bb" stroke-width="1.5" stroke-dasharray="4 3"/>
@@ -66,11 +72,11 @@
     <text x="365" y="218" fill="#ffffff" font-size="8" font-weight="bold">OD</text>
     <text id="pid-val-od" x="365" y="240" fill="#2ECC71" font-size="9" font-weight="bold">--</text>
     <text x="365" y="253" fill="#cbd5e1" font-size="7" font-weight="bold">AIT-102 OD600</text>
-    <!-- Flujo: FIT-101 (FL1) sobre la línea de dosificación -->
-    <circle id="pid-flow" cx="371" cy="275" r="13" fill="#1b2433" stroke="#ffffff" stroke-width="1.5"/>
-    <text x="371" y="278" fill="#ffffff" font-size="8" font-weight="bold">F</text>
-    <text id="pid-val-flujo" x="371" y="300" fill="#cbd5e1" font-size="9" font-weight="bold">--</text>
-    <text x="371" y="313" fill="#cbd5e1" font-size="7" font-weight="bold">FIT-101 FLUJO</text>
+    <!-- Flujo: FIT-101 (DIGITEN FL-S402B) en línea con la bomba de OD -->
+    <circle id="pid-flow" cx="370" cy="105" r="13" fill="#1b2433" stroke="#ffffff" stroke-width="1.5"/>
+    <text x="370" y="108" fill="#ffffff" font-size="8" font-weight="bold">F</text>
+    <text id="pid-val-flujo" x="370" y="130" fill="#cbd5e1" font-size="9" font-weight="bold">--</text>
+    <text x="370" y="143" fill="#cbd5e1" font-size="7" font-weight="bold">FIT-101 FLUJO</text>
   </g>
   <text x="475" y="377" text-anchor="middle" fill="#ffffff" font-size="9">10°C</text>
 </svg>

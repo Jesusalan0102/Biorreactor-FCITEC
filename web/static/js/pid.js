@@ -1,9 +1,10 @@
 /**
- * Colorea el diagrama P&ID (SVG) según el estado de los 6 relés.
- * estados = {rele1: bool, rele2: bool, ..., rele6: bool}
+ * Colorea el diagrama P&ID (SVG) según el estado de los 7 relés.
+ * estados = {rele1: bool, rele2: bool, ..., rele7: bool}
  * Mapeo (igual que monitoreoV2.py):
  *   rele1 = Calefacción, rele2 = Bomba pH(NaOH), rele3 = Bomba IPTG,
- *   rele4 = Bomba Cosecha, rele5 = Agitador, rele6 = Aireación
+ *   rele4 = Bomba Cosecha, rele5 = Agitador, rele6 = Aireación,
+ *   rele7 = Bomba de OD (con el sensor de flujo en su línea)
  */
 function updatePID(estados, lecturas) {
   const ON = "#2ECC71";
@@ -16,6 +17,7 @@ function updatePID(estados, lecturas) {
     "pid-rele4": estados.rele4,
     "pid-rele5": estados.rele5,
     "pid-rele6": estados.rele6,
+    "pid-rele7": estados.rele7,
   };
   for (const [id, on] of Object.entries(fills)) {
     const el = document.getElementById(id);
@@ -27,6 +29,7 @@ function updatePID(estados, lecturas) {
     "pid-line-rele2": estados.rele2,
     "pid-line-rele3": estados.rele3,
     "pid-line-rele6": estados.rele6,
+    "pid-line-rele7": estados.rele7,
     "pid-line-rele4a": estados.rele4,
     "pid-line-rele4b": estados.rele4,
   };

@@ -8,8 +8,9 @@
 #define PIN_TEMP_BUS 8
 const int PIN_PH = A1;    // Pin analógico para pH (voltaje crudo del sensor)
 const int PIN_OD = A2;    // Pin analógico para OD600 (voltaje crudo del sensor)
-const int RELES[] = {2, 3, 4, 5, 6, 7};   // Relé 1..6 -> pines 2..7
-const int NUM_RELES = 6;
+// Relé 1..6 -> pines 2..7; relé 7 (bomba de OD) -> pin 9 (libre: 8 = DS18B20, 18 = sensor de flujo).
+const int RELES[] = {2, 3, 4, 5, 6, 7, 9};
+const int NUM_RELES = 7;
 
 // Sensor de flujo (tipo turbina con salida de pulsos, igual en principio
 // al FL1 del paper de referencia). A diferencia del paper, aquí NO se usa
@@ -95,7 +96,7 @@ void isrFlujo() {
 // valor de referencia -- AJUSTAR al sensor real antes de confiar en el
 // caudal estimado en mL/min. El conteo de pulsos crudo (que es lo que
 // se usa para detectar "bomba sin flujo") no depende de este valor.
-const float FLOW_PULSOS_POR_LITRO = 450.0;
+const float FLOW_PULSOS_POR_LITRO = 1380.0;   // DIGITEN FL-S402B: F = 23·Q(L/min) → 23·60 pulsos/L (calibrar con probeta)
 
 // Vigilancia de "bomba sin flujo": las bombas de dosificación (pH/NaOH,
 // IPTG, cosecha) son las que tiene sentido monitorear -- no el
@@ -107,15 +108,17 @@ const float FLOW_PULSOS_POR_LITRO = 450.0;
 // solo una línea a la vez suele tener el sensor de flujo intercalado
 // (a diferencia del watchdog de comunicación, que sí es una función de
 // seguridad y si actúa solo).
-const int RELES_DOSIFICACION[] = {2, 3, 4}; // pH/NaOH, IPTG, cosecha
-const int NUM_RELES_DOSIFICACION = 3;
+// El sensor de flujo (DIGITEN FL-S402B) está en la línea de la bomba de OD (relé 7), así que solo
+// esa bomba se vigila: en las demás líneas no hay pulsos y darían falsas alarmas.
+const int RELES_DOSIFICACION[] = {7};
+const int NUM_RELES_DOSIFICACION = 1;
 const unsigned long FLOW_TIMEOUT_MS = 5000;
 
-// Indexados 1..6 (mismo número que usa RELE:n en los comandos); la
+// Indexados 1..7 (mismo número que usa RELE:n en los comandos); la
 // posición 0 no se usa. encendidoDesde[n]==0 significa "relé apagado".
-unsigned long releEncendidoDesde[7]   = {0, 0, 0, 0, 0, 0, 0};
-unsigned long pulsosAlEncenderRele[7] = {0, 0, 0, 0, 0, 0, 0};
-bool releAvisoFlujoEnviado[7]         = {false, false, false, false, false, false, false};
+unsigned long releEncendidoDesde[8]   = {0, 0, 0, 0, 0, 0, 0, 0};
+unsigned long pulsosAlEncenderRele[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+bool releAvisoFlujoEnviado[8]         = {false, false, false, false, false, false, false, false};
 
 // ================= TEMPORIZACIÓN NO BLOQUEANTE =================
 unsigned long ultimoEnvio = 0;

@@ -35,7 +35,7 @@ function dibujarGaugesVacios() {
   drawGauge("gauge-temp", RANGO_TEMP[0], ...RANGO_TEMP, ZONAS_TEMP, "TEMPERATURA", "-- °C");
   drawGauge("gauge-ph", RANGO_PH[0], ...RANGO_PH, ZONAS_PH, "pH", "--");
   drawGauge("gauge-od", RANGO_OD[0], ...RANGO_OD, ZONAS_OD, "OD600", "--");
-  updatePID({ rele1: false, rele2: false, rele3: false, rele4: false, rele5: false, rele6: false });
+  updatePID({ rele1: false, rele2: false, rele3: false, rele4: false, rele5: false, rele6: false, rele7: false });
 }
 dibujarGaugesVacios();
 
@@ -126,7 +126,7 @@ function conectarWS() {
         drawGauge("gauge-od", u.od600 ?? RANGO_OD[0], ...RANGO_OD, ZONAS_OD, "OD600", `${(u.od600 ?? 0).toFixed(3)}`);
         updatePID({
           rele1: !!u.rele1, rele2: !!u.rele2, rele3: !!u.rele3,
-          rele4: !!u.rele4, rele5: !!u.rele5, rele6: !!u.rele6,
+          rele4: !!u.rele4, rele5: !!u.rele5, rele6: !!u.rele6, rele7: !!u.rele7,
         }, { temp: u.temperatura, ph: u.ph, od: u.od600 });
         actualizarCharts(estado.rows);
       } else {

@@ -84,6 +84,10 @@ ESQUEMA_PARAMETROS = [
     ("Dosificación", "IPTG · bomba de inducción", "Concentración del stock de IPTG", "mM", "iptg_dosificacion.concentracion_stock_mM", 1, 5000, False),
     ("Dosificación", "Cosecha", "Volumen a cosechar", "mL", "cosecha_dosificacion.volumen_cultivo_ml", 10, 20000, False),
     ("Dosificación", "Cosecha", "Caudal de la bomba", "mL/s", "cosecha_dosificacion.flujo_bomba_ml_s", 0.001, 50, False),
+    ("Dosificación", "OD · bomba de muestreo (relé 7)", "Muestreo automático (1 = sí, 0 = no)", "0/1", "od_bomba.activa", 0, 1, True),
+    ("Dosificación", "OD · bomba de muestreo (relé 7)", "Cada cuántos segundos se muestrea", "s", "od_bomba.intervalo_s", 5, 3600, False),
+    ("Dosificación", "OD · bomba de muestreo (relé 7)", "Duración de cada muestreo", "s", "od_bomba.duracion_s", 1, 600, False),
+    ("Dosificación", "OD · bomba de muestreo (relé 7)", "Caudal de la bomba", "mL/s", "od_bomba.flujo_bomba_ml_s", 0.01, 200, False),
     ("Control", "Temperatura", "Mínimo (enciende el calefactor)", "°C", "rango_control.temperatura.min", 0, 60, False),
     ("Control", "Temperatura", "Máximo (paro de emergencia)", "°C", "rango_control.temperatura.max", 0, 80, False),
     ("Control", "Temperatura", "Histéresis", "°C", "histeresis.temperatura", 0.05, 10, False),
@@ -102,7 +106,8 @@ ESQUEMA_PARAMETROS = [
 
 BOMBAS_DOSIFICACION = {2: ("NaOH (pH)", "ph_dosificacion", "bomba_ph"),
                        3: ("IPTG", "iptg_dosificacion", "bomba_iptg"),
-                       4: ("Cosecha", "cosecha_dosificacion", "bomba_cosecha")}
+                       4: ("Cosecha", "cosecha_dosificacion", "bomba_cosecha"),
+                       7: ("OD", "od_bomba", "bomba_od")}
 
 
 class ModalBase(ctk.CTkToplevel):
@@ -296,6 +301,18 @@ def verificar_password(pwd_ingresada, pwd_guardada):
         return pwd_ingresada == pwd_guardada
 
 
+def _ssl_kwargs():
+    """SSL opcional para proveedores que lo exigen (Aiven, TiDB Cloud, etc.).
+    DB_SSL_CA=ruta/al/ca.pem  → verifica el certificado del servidor.
+    DB_SSL=true               → conexión cifrada sin CA propia."""
+    ca = os.getenv("DB_SSL_CA")
+    if ca:
+        return {"ssl_ca": ca}
+    if os.getenv("DB_SSL", "").strip().lower() in ("1", "true", "yes", "si", "sí"):
+        return {"ssl_verify_cert": True}
+    return {}
+
+
 def conectar_db():
     try:
         conn = pymysql.connect(
@@ -304,7 +321,8 @@ def conectar_db():
             password=DB_PASSWORD,
             database=DB_NAME,
             port=DB_PORT,
-            connect_timeout=8
+            connect_timeout=8,
+            **_ssl_kwargs()
         )
         print("¡CONEXIÓN ÉXITO con PyMySQL!")
         return conn
@@ -833,10 +851,17 @@ class PIDDiagram(ctk.CTkFrame):
         c.create_oval(457, 330, 493, 366, outline="#ffffff", fill="#2c3e50", width=1.5)
         c.create_text(475, 378, text="V-101", fill=COLOR_TEXTO_SUAVE, font=(FUENTE, 8, "bold"))
 
+        # Bomba de OD (relé 7): toma muestra del tanque y la pasa por el módulo óptico; el sensor
+        # de flujo FL1 va en esta línea (como en la Figura 2 del paper).
+        self.bomba_od = c.create_oval(420, 35, 470, 85, outline="#ffffff", fill=off, width=1.5)
+        c.create_text(445, 60, text="⟳", fill="#ffffff", font=(FUENTE, 16))
+        c.create_text(445, 100, text="P-106\nBOMBA OD", fill=COLOR_TEXTO_SUAVE,
+                      font=(FUENTE, 8, "bold"), justify="center")
+        self.linea_od = c.create_line(420, 60, 320, 150, fill=off, width=2)
+
         # ── Instrumentos (sensores): pH, OD600, temperatura y flujo ──────────────────────────
         # Notación ISA: AIT = analizador/transmisor, TIT = temperatura, FIT = flujo.
-        # No hay "bomba de OD": el OD600 se mide con el sensor SUMERGIDO (el paper también lo
-        # permite y es su opción preferida), así que no hace falta bombear muestra por un sensor.
+        # El OD600 se mide con LED 600 nm + fototransistor; la bomba de OD (P-106) renueva la muestra.
         sensor_fill = "#1b2433"
         txt = COLOR_TEXTO_SUAVE
 
@@ -866,13 +891,13 @@ class PIDDiagram(ctk.CTkFrame):
         c.create_line(288, 215, 298, 215, fill="#f4a261", width=1, dash=(2, 2))
         self.val_od = instrumento(365, 215, "OD", "AIT-102 OD600")
 
-        # Flujo (FIT-101 / FL1): DIGITEN FL-S402B en línea con la salida de la bomba de IPTG
-        self.bola_flujo = c.create_oval(152, 259, 178, 285, outline="#ffffff", fill=sensor_fill, width=1.5)
-        c.create_text(165, 272, text="F", fill="#ffffff", font=(FUENTE, 8, "bold"))
-        self.val_flujo = c.create_text(165, 297, text="--", fill=COLOR_LED_ON, font=(FUENTE, 9, "bold"))
-        c.create_text(165, 310, text="FIT-101 FLUJO", fill=txt, font=(FUENTE, 7, "bold"))
+        # Flujo (FIT-101 / FL1): DIGITEN FL-S402B en línea con la bomba de OD
+        self.bola_flujo = c.create_oval(357, 92, 383, 118, outline="#ffffff", fill=sensor_fill, width=1.5)
+        c.create_text(370, 105, text="F", fill="#ffffff", font=(FUENTE, 8, "bold"))
+        self.val_flujo = c.create_text(370, 130, text="--", fill=COLOR_LED_ON, font=(FUENTE, 9, "bold"))
+        c.create_text(370, 143, text="FIT-101 FLUJO", fill=txt, font=(FUENTE, 7, "bold"))
 
-        self._lineas_animables = [self.linea_ph, self.linea_iptg, self.linea_aire,
+        self._lineas_animables = [self.linea_ph, self.linea_iptg, self.linea_aire, self.linea_od,
                                    self.linea_cosecha_a, self.linea_cosecha_b, self.eje]
 
     def actualizar_estado(self, rele_estados: dict):
@@ -891,6 +916,9 @@ class PIDDiagram(ctk.CTkFrame):
 
         c.itemconfig(self.bomba_aire, fill=on if rele_estados.get(6) else off)
         c.itemconfig(self.linea_aire, fill=on if rele_estados.get(6) else off)
+
+        c.itemconfig(self.bomba_od, fill=on if rele_estados.get(7) else off)
+        c.itemconfig(self.linea_od, fill=on if rele_estados.get(7) else off)
 
         cosecha_on = rele_estados.get(4)
         c.itemconfig(self.bomba_cosecha, fill=on if cosecha_on else off)
@@ -979,7 +1007,12 @@ class DashboardApp(ctk.CTk):
         # al cerrar el Dashboard (ver on_closing).
         self._after_ids = {}
 
-        self.rele_estados = {1: False, 2: False, 3: False, 4: False, 5: False, 6: False}
+        self.rele_estados = {1: False, 2: False, 3: False, 4: False, 5: False, 6: False, 7: False}
+        # Bomba de OD (relé 7): durante el cultivo hace pasar muestra por el módulo óptico (sensor
+        # OD600 + sensor de flujo FL1) cada 'intervalo_s' durante 'duracion_s'. Caudal: CALIBRAR.
+        self.bomba_od = False
+        self.od_bomba = {'activa': 1, 'intervalo_s': 60, 'duracion_s': 10, 'flujo_bomba_ml_s': 5.0}
+        self._od_estado = {'bombeando': False, 'inicio': None, 'proximo': None}
         self.bomba_ph = False
         self.bomba_iptg = False
         self.bomba_cosecha = False
@@ -1124,7 +1157,7 @@ class DashboardApp(ctk.CTk):
             'min_pulsos_verif': 5,       # pulsos esperados mínimos para un veredicto de VOLUMEN
             'min_pulsos_validacion': 20, # pulsos mínimos en una prueba para dar el sensor por VALIDADO
             'sensor_validado': False,    # True solo si una prueba demostró que responde al caudal real
-            'bombas_con_sensor': [3],    # relés cuya línea pasa por el sensor: salida del IPTG
+            'bombas_con_sensor': [7],    # relés cuya línea pasa por el sensor: bomba de OD
         }
         self._flow_cbs = []              # cola de (timestamp, callback) de peticiones FLOW
         self._flujo_medicion = {}        # relé -> {'ini': pulsos al iniciar, 'esperado_ml': mL}
@@ -1710,14 +1743,14 @@ class DashboardApp(ctk.CTk):
             INSERT INTO datos_bioreactor (
                 fecha_hora,
                 temperatura, ph, od600,
-                rele1, rele2, rele3, rele4, rele5, rele6,
+                rele1, rele2, rele3, rele4, rele5, rele6, rele7,
                 bomba_ph_on, bomba_iptg_on, bomba_cosecha_on,
                 sistema_funcionando,
                 flujo_pulsos, flujo_litros_acum, flujo_alerta
             ) VALUES (
                 %s,
                 %s, %s, %s,
-                %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s, %s, %s,
                 %s, %s, %s,
                 %s,
                 %s, %s, %s
@@ -1748,6 +1781,7 @@ class DashboardApp(ctk.CTk):
                 int(self.rele_estados.get(4, 0)),
                 int(self.rele_estados.get(5, 0)),
                 int(self.rele_estados.get(6, 0)),
+                int(self.rele_estados.get(7, 0)),
                 int(self.bomba_ph),
                 int(self.bomba_iptg),
                 int(self.bomba_cosecha),
@@ -1866,11 +1900,12 @@ class DashboardApp(ctk.CTk):
         self.rele_estados[2] = self.bomba_ph
         self.rele_estados[3] = self.bomba_iptg
         self.rele_estados[4] = self.bomba_cosecha
+        self.rele_estados[7] = self.bomba_od
 
         self.lbl_etapa.configure(text=f"ETAPA: {self.etapa}")
         self.lbl_reles.configure(
             text=f"Relés: {self.rele_estados} | Bombas: pH={self.bomba_ph}, IPTG={self.bomba_iptg}, "
-                 f"Cosecha={self.bomba_cosecha} | NaOH total: {self._ph_estado['total_naoh_ml']:.2f} mL"
+                 f"Cosecha={self.bomba_cosecha}, OD={self.bomba_od} | NaOH total: {self._ph_estado['total_naoh_ml']:.2f} mL"
                  f" | IPTG total: {self._iptg_estado['total_ml']:.2f} mL"
         )
 
@@ -1893,16 +1928,18 @@ class DashboardApp(ctk.CTk):
         try:
             self._vigilar_prueba_bomba()
             if not (self.emergencia or self.pausado):
-                antes = (self.bomba_ph, self.bomba_iptg, self.bomba_cosecha)
+                antes = (self.bomba_ph, self.bomba_iptg, self.bomba_cosecha, self.bomba_od)
+                self._gestionar_od_bomba()
                 self._finalizar_pulso_ph()
                 self._revisar_feedback_ph()
                 self._gestionar_iptg_dosificacion()
                 if self.etapa == "HARVEST":
                     self._gestionar_cosecha_dosificacion()
-                if (self.bomba_ph, self.bomba_iptg, self.bomba_cosecha) != antes:
+                if (self.bomba_ph, self.bomba_iptg, self.bomba_cosecha, self.bomba_od) != antes:
                     self.rele_estados[2] = self.bomba_ph
                     self.rele_estados[3] = self.bomba_iptg
                     self.rele_estados[4] = self.bomba_cosecha
+                    self.rele_estados[7] = self.bomba_od
                     self._enviar_estado_reles()
         except Exception as e:
             print(f"[BOMBAS] Error en vigilancia de bombas: {e}")
@@ -2058,6 +2095,35 @@ class DashboardApp(ctk.CTk):
         print(f"[FEEDBACK] {msg}")
         self._en_hilo_bd(self.registrar_evento_bd, msg)
 
+    def _gestionar_od_bomba(self):
+        """Ciclo de la bomba de OD: en GROWING/INDUCED enciende 'duracion_s' cada 'intervalo_s' (el
+        primer muestreo es inmediato). El sensor de flujo, que está en esta línea, verifica cada
+        muestreo con el volumen esperado = duración × caudal. Corre cada 200 ms."""
+        cfg = self.od_bomba
+        est = self._od_estado
+        ahora = time.time()
+        if est['bombeando']:
+            if ahora - est['inicio'] >= cfg['duracion_s'] or not cfg['activa']:
+                self.bomba_od = False
+                est['bombeando'] = False
+                est['proximo'] = ahora + cfg['intervalo_s']
+                self.rele_estados[7] = False
+                self._enviar_estado_reles()          # el OFF llega antes que la petición de pulsos
+                self._flujo_fin(7)
+            return
+        if not cfg['activa'] or self.etapa not in ("GROWING", "INDUCED"):
+            est['proximo'] = None
+            return
+        if self._prueba_bomba and not self._prueba_bomba['terminada']:
+            return                                   # no pisar una prueba de calibración
+        if est['proximo'] is None:
+            est['proximo'] = ahora
+        if ahora >= est['proximo']:
+            est['bombeando'] = True
+            est['inicio'] = ahora
+            self._flujo_inicio(7, cfg['duracion_s'] * cfg['flujo_bomba_ml_s'])
+            self.bomba_od = True
+
     def _iniciar_cosecha(self):
         """Calcula el tiempo de bombeo de cosecha a partir del volumen de
         cultivo y el flujo de la bomba (igual que HARVEST_MINUTES en el
@@ -2087,10 +2153,10 @@ class DashboardApp(ctk.CTk):
             self._en_hilo_bd(self.registrar_evento_bd, "Cosecha completada - cultivo listo (etapa DONE)")
 
     def _enviar_estado_reles(self):
-        """Envía el estado de los 6 relés al Arduino en un solo paso."""
+        """Envía el estado de los 7 relés al Arduino en un solo paso."""
         if not (self.serial and self.serial.is_open):
             return
-        for num in range(1, 7):
+        for num in range(1, 8):
             estado = self.rele_estados.get(num, False)
             self.serial.write(f"RELE:{num},{'ON' if estado else 'OFF'}\n".encode())
 
@@ -2164,6 +2230,7 @@ class DashboardApp(ctk.CTk):
             self._od_consec = {'induccion': 0, 'cosecha': 0}
             self._flujo_medicion.clear()
             self._flujo_verif = {n: self._verif_vacia() for n in BOMBAS_DOSIFICACION}
+            self._od_estado.update({'bombeando': False, 'inicio': None, 'proximo': None})
             mostrar_info(self, "Cultivo", "Cultivo iniciado - agitación y aeración activadas (relés 5 y 6 ON)")
 
     def paro_emergencia(self):
@@ -2186,6 +2253,8 @@ class DashboardApp(ctk.CTk):
         self.bomba_ph = False
         self.bomba_iptg = False
         self.bomba_cosecha = False
+        self.bomba_od = False
+        self._od_estado.update({'bombeando': False, 'inicio': None, 'proximo': None})
 
         # Pausar dosificaciones de bolo en curso (IPTG/cosecha) en vez de
         # dejar correr su cronómetro interno durante la emergencia -- sin
@@ -2263,6 +2332,7 @@ class DashboardApp(ctk.CTk):
         self.rele_estados[2] = self.bomba_ph
         self.rele_estados[3] = self.bomba_iptg
         self.rele_estados[4] = self.bomba_cosecha
+        self.rele_estados[7] = self.bomba_od
 
         if self.serial and self.serial.is_open:
             print("Enviando comandos de reanudación al Arduino...")
@@ -2756,10 +2826,10 @@ class DashboardApp(ctk.CTk):
             nombres = ", ".join(BOMBAS_DOSIFICACION.get(n, (f"relé {n}",))[0] for n in alertas)
             filas.append(("Alarma de flujo", f"Bomba sin flujo: {nombres}", "error"))
         totales = {2: f"{self._ph_estado['total_naoh_ml']:.2f} mL dosificados",
-                   3: f"{self._iptg_estado['total_ml']:.2f} mL dosificados", 4: ""}
+                   3: f"{self._iptg_estado['total_ml']:.2f} mL dosificados", 4: "", 7: ""}
         for num, (nombre, _, attr) in BOMBAS_DOSIFICACION.items():
             partes = ["ENCENDIDA" if getattr(self, attr) else "apagada"]
-            if totales[num]:
+            if totales.get(num):
                 partes.append(totales[num])
             if num in self.flujo_cfg['bombas_con_sensor']:
                 v = self._flujo_verif[num]
@@ -3402,7 +3472,13 @@ class CalibracionWindow(ctk.CTkToplevel):
             f1.pack(fill="x", padx=10, pady=2)
             ctk.CTkLabel(f1, text="Tiempo de prueba (s):").pack(side="left")
             ui['seg'] = ctk.CTkEntry(f1, width=70)
-            ui['seg'].insert(0, "60" if num in self.app.flujo_cfg['bombas_con_sensor'] else "10")
+            if num in self.app.flujo_cfg['bombas_con_sensor']:
+                # segundos para que el sensor cuente ≈25 pulsos (precisión ≈ ±4%), entre 10 y 120 s
+                k_ml0 = self.app.flujo_cfg['pulsos_por_litro'] / 1000.0
+                caudal0 = max(getattr(self.app, cfg_attr)['flujo_bomba_ml_s'], 1e-6)
+                ui['seg'].insert(0, f"{min(120, max(10, round(25 / (caudal0 * k_ml0)))):d}")
+            else:
+                ui['seg'].insert(0, "10")
             ui['seg'].pack(side="left", padx=6)
             ui['btn_probar'] = ctk.CTkButton(f1, text="▶ Probar bomba", width=130,
                                              command=lambda n=num: self._probar_bomba(n))

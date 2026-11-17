@@ -31,6 +31,18 @@ def ahora_tijuana() -> datetime:
     return datetime.now(TZ_TIJUANA)
 
 
+def _ssl_kwargs():
+    """SSL opcional para proveedores que lo exigen (Aiven, TiDB Cloud, etc.).
+    DB_SSL_CA=ruta/al/ca.pem  → verifica el certificado del servidor.
+    DB_SSL=true               → conexión cifrada sin CA propia."""
+    ca = os.getenv("DB_SSL_CA")
+    if ca:
+        return {"ssl_ca": ca}
+    if os.getenv("DB_SSL", "").strip().lower() in ("1", "true", "yes", "si", "sí"):
+        return {"ssl_verify_cert": True}
+    return {}
+
+
 def conectar():
     """Conexión bloqueante a MySQL. Devuelve None si falla (nunca lanza)."""
     try:
@@ -42,6 +54,7 @@ def conectar():
             port=DB_PORT,
             connect_timeout=10,
             cursorclass=pymysql.cursors.DictCursor,
+            **_ssl_kwargs(),
         )
     except Exception as e:
         print(f"[DB] ERROR al conectar: {e}")
@@ -115,6 +128,7 @@ def obtener_estado_actual(limit: int = 20) -> dict:
                        IFNULL(rele4, 0) AS rele4,
                        IFNULL(rele5, 0) AS rele5,
                        IFNULL(rele6, 0) AS rele6,
+                       IFNULL(rele7, 0) AS rele7,
                        IFNULL(flujo_pulsos, 0) AS flujo_pulsos,
                        IFNULL(flujo_litros_acum, 0) AS flujo_litros_acum,
                        IFNULL(flujo_alerta, 0) AS flujo_alerta
@@ -225,7 +239,7 @@ def activar_paro() -> bool:
                 """UPDATE sistema_control
                    SET emergencia = 1, comando_reanudar = 0,
                        rele1 = 0, rele2 = 0, rele3 = 0,
-                       rele4 = 0, rele5 = 0, rele6 = 0
+                       rele4 = 0, rele5 = 0, rele6 = 0, rele7 = 0
                    WHERE id = 1"""
             )
             conn.commit()
