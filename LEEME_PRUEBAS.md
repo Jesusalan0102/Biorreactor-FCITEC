@@ -42,3 +42,9 @@ Si Clever Cloud falla, mira el mensaje en la consola de la app (`ERROR en PyMySQ
 ## Conexión del sensor FL-S402B
 Rojo → 5 V, negro → GND, amarillo → pin 18 (solo en Arduino Mega). Instálalo en la línea de la bomba de OD, respeta la flecha del flujo y cebra para que no pase aire.
 Relé 7 (bomba de OD): módulo de relés canal 7 ← pin 9 del Mega. El módulo de 8 canales de tu diagrama ya tiene el canal.
+
+## Conexión a TiDB Cloud (puerto 4000, TLS obligatorio)
+`.env`: `DB_HOST`, `DB_USER` (con prefijo, termina en `.root`), `DB_PASSWORD`, `DB_NAME=biorreactor`, `DB_PORT=4000` y `DB_SSL_CA=isrgrootx1.pem`
+(el certificado ya está en la raíz del repositorio y en `web/`; una ruta relativa se busca junto al script).
+Después: `python inicializar_bd.py --usuario TU_USUARIO`. En Render, define `DB_HOST`, `DB_USER`, `DB_PASSWORD` y `DB_NAME`
+(el puerto y el certificado ya vienen en `render.yaml`) y permite en TiDB las IP de Render en su lista de acceso.

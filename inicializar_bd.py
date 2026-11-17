@@ -22,8 +22,11 @@ def conectar():
     kwargs = dict(host=os.getenv("DB_HOST"), user=os.getenv("DB_USER"), password=os.getenv("DB_PASSWORD"),
                   database=os.getenv("DB_NAME"), port=int(os.getenv("DB_PORT", "3306")),
                   connect_timeout=15, charset="utf8mb4")
-    if os.getenv("DB_SSL_CA"):
-        kwargs["ssl_ca"] = os.getenv("DB_SSL_CA")
+    ca = os.getenv("DB_SSL_CA")
+    if ca:
+        if not os.path.isabs(ca):   # ruta relativa: se busca junto a este archivo
+            ca = os.path.join(AQUI, ca)
+        kwargs["ssl_ca"] = ca
     elif os.getenv("DB_SSL", "").lower() in ("1", "true", "yes", "si", "sí"):
         kwargs["ssl_verify_cert"] = True   # cifrado sin CA propia (equivale a no verificar el certificado)
     return pymysql.connect(**kwargs)

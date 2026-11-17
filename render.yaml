@@ -22,4 +22,6 @@ services:
       - key: DB_NAME
         sync: false
       - key: DB_PORT
-        value: "3306"
+        value: "4000"
+      - key: DB_SSL_CA
+        value: isrgrootx1.pem

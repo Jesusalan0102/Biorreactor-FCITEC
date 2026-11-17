@@ -37,6 +37,8 @@ def _ssl_kwargs():
     DB_SSL=true               → conexión cifrada sin CA propia."""
     ca = os.getenv("DB_SSL_CA")
     if ca:
+        if not os.path.isabs(ca):   # ruta relativa: se busca junto a este archivo (p. ej. isrgrootx1.pem)
+            ca = os.path.join(os.path.dirname(os.path.abspath(__file__)), ca)
         return {"ssl_ca": ca}
     if os.getenv("DB_SSL", "").strip().lower() in ("1", "true", "yes", "si", "sí"):
         return {"ssl_verify_cert": True}
