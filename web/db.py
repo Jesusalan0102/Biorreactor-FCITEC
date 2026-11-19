@@ -117,8 +117,7 @@ def obtener_estado_actual(limit: int = 20) -> dict:
 
     try:
         with conn.cursor() as cur:
-            cur.execute(
-                """
+            _sql = """
                 SELECT temperatura, ph, od600, fecha_hora,
                        IFNULL(rele1, 0) AS rele1,
                        IFNULL(rele2, 0) AS rele2,
@@ -126,13 +125,20 @@ def obtener_estado_actual(limit: int = 20) -> dict:
                        IFNULL(rele4, 0) AS rele4,
                        IFNULL(rele5, 0) AS rele5,
                        IFNULL(rele6, 0) AS rele6,
-                       IFNULL(rele7, 0) AS rele7
+                       __RELE7__
                 FROM datos_bioreactor
                 ORDER BY fecha_hora DESC
                 LIMIT %s
-                """,
-                (limit,),
-            )
+                """
+            try:
+                cur.execute(_sql.replace("__RELE7__", "IFNULL(rele7, 0) AS rele7"), (limit,))
+            except pymysql.MySQLError as e:
+                # Base creada con la versión anterior (6 relés): se lee sin esa columna.
+                if not (e.args and e.args[0] == 1054 and "rele7" in str(e)):
+                    raise
+                print("[DB] Aviso: la tabla datos_bioreactor no tiene la columna rele7. "
+                      "Ejecuta inicializar_bd.py (o migracion_rele7.sql) para agregarla.")
+                cur.execute(_sql.replace("__RELE7__", "0 AS rele7"), (limit,))
             rows = cur.fetchall()[::-1]  # cronológico ascendente
 
             cur.execute("SELECT emergencia FROM sistema_control WHERE id = 1")
@@ -219,13 +225,17 @@ def activar_paro() -> bool:
         return False
     try:
         with conn.cursor() as cur:
-            cur.execute(
-                """UPDATE sistema_control
+            sql = """UPDATE sistema_control
                    SET emergencia = 1, comando_reanudar = 0,
                        rele1 = 0, rele2 = 0, rele3 = 0,
-                       rele4 = 0, rele5 = 0, rele6 = 0, rele7 = 0
+                       rele4 = 0, rele5 = 0, rele6 = 0__R7__
                    WHERE id = 1"""
-            )
+            try:
+                cur.execute(sql.replace("__R7__", ", rele7 = 0"))
+            except pymysql.MySQLError as e:
+                if not (e.args and e.args[0] == 1054 and "rele7" in str(e)):
+                    raise
+                cur.execute(sql.replace("__R7__", ""))   # base sin la columna rele7
         conn.commit()
         return True
     except Exception as e:

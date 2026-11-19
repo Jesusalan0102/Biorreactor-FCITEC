@@ -12,17 +12,12 @@ const int PIN_OD = A2;    // Pin analógico para OD600 (voltaje crudo del sensor
 const int RELES[] = {2, 3, 4, 5, 6, 7, 9};
 const int NUM_RELES = 7;
 
-// Sensor de flujo (tipo turbina con salida de pulsos, igual en principio
-// al FL1 del paper de referencia). A diferencia del paper, aquí NO se usa
-// para el OD600 -- este diseño usa el sensor de OD sumergido (Beer-
-// Lambert), que no requiere bombear la muestra a través de él, así que no
-// existe una "OD Pump" que monitorear. En su lugar, este sensor se usa
-// para verificar que las bombas de dosificación (pH/NaOH, IPTG, cosecha)
-// realmente estén moviendo líquido cuando están encendidas -- útil para
-// detectar una manguera doblada, una bomba atascada o un reservorio vacío.
-// Pin 18 es uno de los pines con capacidad de interrupción externa del
-// Mega (INT5); los pines 2 y 3, que también la tienen, ya están tomados
-// por los relés 1 y 2.
+// Sensor de flujo FL1 (DIGITEN FL-S402B, salida de pulsos: F = 23 * Q[L/min]) instalado en la
+// línea de la bomba de OD (relé 7), como en la Figura 2 del paper de referencia. Sirve para
+// verificar que esa bomba realmente mueve líquido cuando está encendida (manguera doblada,
+// bomba atascada, reservorio vacío). Cableado: rojo = 5 V, negro = GND, amarillo = pin 18.
+// Pin 18 es la interrupción externa INT3 del Mega (los pines 2 y 3 también la tienen, pero
+// ya son de los relés 1 y 2).
 const int PIN_FLOW = 18;
 
 // El módulo de 8 relés SRD-05VDC-SL-C (Songle) es de activación en BAJO:

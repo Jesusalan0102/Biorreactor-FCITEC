@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import serial
 import serial.tools.list_ports
+import queue
 import threading
 import time
 import os
@@ -17,7 +18,7 @@ from dotenv import load_dotenv
 
 TZ_TIJUANA = ZoneInfo("America/Tijuana")
 
-load_dotenv()
+load_dotenv(override=True)
 
 # Configuración base de datos (Clever Cloud) - se cargan desde variables de
 # entorno / archivo .env, NUNCA hardcodeadas en el código fuente.
@@ -1007,6 +1008,7 @@ class DashboardApp(ctk.CTk):
 
         # Ids de los after() periódicos, para poder cancelarlos limpiamente
         # al cerrar el Dashboard (ver on_closing).
+        self._cola_gui = queue.Queue()   # callbacks que los hilos de BD dejan para el hilo principal
         self._after_ids = {}
 
         self.rele_estados = {1: False, 2: False, 3: False, 4: False, 5: False, 6: False, 7: False}
@@ -1175,6 +1177,7 @@ class DashboardApp(ctk.CTk):
         self.construir_ui()
 
         # Iniciar chequeo BD y actualización GUI
+        self._drenar_cola_gui()
         self.chequear_emergencia_periodico()
         self.actualizar_gui_periodica()
         self._vigilar_bombas()
@@ -1726,8 +1729,27 @@ class DashboardApp(ctk.CTk):
             except Exception as e:
                 print(f"[BD hilo] Error ejecutando {getattr(func, '__name__', func)}: {e}")
             if callback is not None and self.is_running:
-                self.after(0, lambda: callback(resultado))
+                # NO se llama self.after() desde este hilo: DashboardApp es una segunda raíz de Tk
+                # (creada dentro del mainloop de LoginApp) y Tkinter lanza "main thread is not in main
+                # loop" al hacerlo. En su lugar se deja el resultado en una cola que el hilo principal
+                # vacía cada 100 ms (ver _drenar_cola_gui).
+                self._cola_gui.put((callback, resultado))
         threading.Thread(target=_tarea, daemon=True).start()
+
+    def _drenar_cola_gui(self):
+        """Corre en el hilo principal: ejecuta los callbacks que dejaron los hilos de BD."""
+        if not self.is_running:
+            return
+        try:
+            while True:
+                callback, resultado = self._cola_gui.get_nowait()
+                try:
+                    callback(resultado)
+                except Exception as e:
+                    print(f"[GUI] Error en callback de BD: {e}")
+        except queue.Empty:
+            pass
+        self._after_ids['cola_gui'] = self.after(100, self._drenar_cola_gui)
 
     def guardar_en_bd(self, temp, ph, od600):
         """Inserta una lectura en datos_bioreactor. NO debe tocar widgets de
@@ -1791,7 +1813,17 @@ class DashboardApp(ctk.CTk):
                 flujo_pulsos_snap, flujo_litros_snap, flujo_alerta_snap
             )
             print(f"[BD] Ejecutando INSERT con valores: {valores}")
-            cursor.execute(query, valores)
+            try:
+                cursor.execute(query, valores)
+            except pymysql.MySQLError as e:
+                # Base creada con la versión anterior (6 relés): se guarda sin la columna rele7.
+                if not (e.args and e.args[0] == 1054 and "rele7" in str(e)):
+                    raise
+                print("[BD] Aviso: datos_bioreactor no tiene la columna rele7; se guarda sin ella. "
+                      "Ejecuta inicializar_bd.py para agregarla.")
+                query_old = query.replace("rele6, rele7,", "rele6,").replace(
+                    "%s, %s, %s, %s, %s, %s, %s,", "%s, %s, %s, %s, %s, %s,", 1)
+                cursor.execute(query_old, valores[:10] + valores[11:])
             conn.commit()
             print(f"[BD] Guardado OK - filas afectadas: {cursor.rowcount}")
             return "ok"

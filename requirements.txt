@@ -5,3 +5,4 @@ matplotlib
 pillow
 python-dotenv
 bcrypt
+tzdata
