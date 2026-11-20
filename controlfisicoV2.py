@@ -14,6 +14,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 import pymysql
 import bcrypt
+from respaldo_local import RespaldoLocal
 from dotenv import load_dotenv
 
 TZ_TIJUANA = ZoneInfo("America/Tijuana")
@@ -1169,6 +1170,14 @@ class DashboardApp(ctk.CTk):
         self._prueba_bomba = None        # prueba de bomba en curso (ver iniciar_prueba_bomba)
         self._avisos_pendientes = []     # (relé, texto) que el hilo serial deja para mostrar en la GUI
         self._ultima_telemetria_ts = None
+        # --- Resistencia a fallas para pruebas de 24 h ---
+        self.respaldo = RespaldoLocal()          # cola CSV si la BD no responde
+        self._puerto_reconexion = None           # último COM usado (para reconectar solo)
+        self._reconexion_id = None
+        self._serial_perdido = False             # True mientras el COM está caído
+        self._sin_datos_avisado = False          # evento 'sin telemetría' ya registrado
+        self.EDAD_MAX_TELEMETRIA = 15            # s: más viejo que esto ya no es 'en vivo'
+        self._evitar_suspension()
         self.ventana_parametros = None
         self.cargar_parametros()
 
@@ -1365,19 +1374,33 @@ class DashboardApp(ctk.CTk):
             self.puerto_combo.current(0)
             self.puerto_var.set(puertos[0])
 
-    def conectar(self):
+    def conectar(self, silencioso=False):
+        """silencioso=True: reconexión automática (sin ventanas emergentes)."""
         if self.serial and self.serial.is_open:
-            mostrar_info(self, "Info", "Ya está conectado")
+            if not silencioso:
+                mostrar_info(self, "Info", "Ya está conectado")
             return
 
         puerto = self.puerto_var.get()
         if not puerto:
-            mostrar_aviso(self, "Puerto", "Selecciona un puerto")
+            if not silencioso:
+                mostrar_aviso(self, "Puerto", "Selecciona un puerto")
             return
 
         try:
             self.serial = serial.Serial(puerto, 9600, timeout=1)
             time.sleep(2)
+            self._puerto_reconexion = puerto
+            if self._reconexion_id is not None:
+                try:
+                    self.after_cancel(self._reconexion_id)
+                except Exception:
+                    pass
+                self._reconexion_id = None
+            if self._serial_perdido:
+                self._serial_perdido = False
+                self._sin_datos_avisado = False
+                self._en_hilo_bd(self.registrar_evento_bd, f"Serial {puerto} reconectado: el registro continúa")
 
             self.btn_conectar.configure(state="disabled")
             self.btn_desconectar.configure(state="normal")
@@ -1395,16 +1418,31 @@ class DashboardApp(ctk.CTk):
             # Dar tiempo al Arduino a reiniciar (bootloader) antes de sincronizar calibración
             self.after(2500, self.sincronizar_calibracion_inicial)
 
-            mostrar_info(self, "Éxito", f"Conectado a {puerto}")
+            if not silencioso:
+                mostrar_info(self, "Éxito", f"Conectado a {puerto}")
 
         except Exception as e:
-            self.lbl_falla.set_estado(True)
-            mostrar_error(self, "Error", f"Fallo al conectar:\n{e}")
+            self.serial = None
+            if silencioso:
+                print(f"[RECONEXIÓN] {puerto} aún no disponible: {e}")
+            else:
+                self.lbl_falla.set_estado(True)
+                mostrar_error(self, "Error", f"Fallo al conectar:\n{e}")
 
-    def desconectar(self):
+    def desconectar(self, manual=True):
+        if manual:
+            # El usuario pidió desconectar: no reconectar solo.
+            self._puerto_reconexion = None
+            self._serial_perdido = False
+            if self._reconexion_id is not None:
+                try:
+                    self.after_cancel(self._reconexion_id)
+                except Exception:
+                    pass
+                self._reconexion_id = None
         if self.serial and self.serial.is_open:
             self.serial.close()
-            self.serial = None
+        self.serial = None
 
         self.btn_conectar.configure(state="normal")
         self.btn_desconectar.configure(state="disabled")
@@ -1594,37 +1632,82 @@ class DashboardApp(ctk.CTk):
             time.sleep(0.05)
 
     def _manejar_desconexion_inesperada(self):
-        """Corre en el hilo principal (agendado desde hilo_lectura). Limpia
-        el estado de conexión y avisa al usuario, para que 'Conectar' quede
-        disponible de nuevo sin tener que reiniciar la aplicación."""
+        """Corre en el hilo principal (agendado desde hilo_lectura). Limpia la
+        conexión SIN ventana emergente (la prueba corre sin nadie enfrente),
+        deja constancia en la tabla 'eventos' (visible en el SCADA) y empieza
+        a reintentar el mismo COM cada 5 s hasta que vuelva."""
         if not self.winfo_exists():
             return
-        # Si self.serial ya es None fue una desconexión manual (ver
-        # desconectar()), no una pérdida real de la conexión: no hace falta
-        # avisar de nuevo.
-        habia_conexion = self.serial is not None
-        self.desconectar()
-        if habia_conexion:
-            self.lbl_falla.set_estado(True)
-            mostrar_error(
-                self, "Conexión perdida",
-                "Se perdió la comunicación con el Arduino (cable desconectado, puerto "
-                "cerrado, etc.). Verifica la conexión física y vuelve a presionar "
-                "'Conectar'."
-            )
+        # Si self.serial ya es None fue una desconexión manual: nada que hacer.
+        if self.serial is None:
+            return
+        puerto = self._puerto_reconexion or self.puerto_var.get()
+        self.desconectar(manual=False)
+        self._puerto_reconexion = puerto
+        self._serial_perdido = True
+        self.lbl_falla.set_estado(True)
+        self.lbl_etapa.configure(text="ETAPA: SERIAL PERDIDO - reconectando...")
+        self._en_hilo_bd(self.registrar_evento_bd,
+                         f"Serial {puerto} perdido: sin telemetría. Reintentando cada 5 s "
+                         "(el Arduino apaga los relés a los 10 s sin comandos)")
+        if self._reconexion_id is None:
+            self._reconexion_id = self.after(5000, self._reconexion_auto)
+
+    def _reconexion_auto(self):
+        self._reconexion_id = None
+        if not self.is_running or self.serial is not None or not self._puerto_reconexion:
+            return
+        try:
+            puertos = [p.device for p in serial.tools.list_ports.comports()]
+            if self._puerto_reconexion in puertos:
+                self.puerto_var.set(self._puerto_reconexion)
+                self.conectar(silencioso=True)
+        except Exception as e:
+            print(f"[RECONEXIÓN] Error: {e}")
+        if self.serial is None and self.is_running:
+            self._reconexion_id = self.after(5000, self._reconexion_auto)
+
+    def _evitar_suspension(self):
+        """Windows: impide que la laptop se suspenda mientras la app corre
+        (la pantalla sí puede apagarse). No tiene efecto en otros SO."""
+        try:
+            import ctypes
+            ES_CONTINUOUS, ES_SYSTEM_REQUIRED = 0x80000000, 0x00000001
+            ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)
+        except Exception:
+            pass
+
+    def _telemetria_fresca(self):
+        ts = self._ultima_telemetria_ts
+        return ts is not None and (time.time() - ts) <= self.EDAD_MAX_TELEMETRIA
 
     def actualizar_gui_periodica(self):
         if not self.is_running:
             return
 
         with self.datos_lock:
-            if self.ultimos_datos:
+            if self.ultimos_datos and self._telemetria_fresca():
                 temp, ph, od600 = self.ultimos_datos
+                if self._sin_datos_avisado:
+                    self._sin_datos_avisado = False
+                    self._en_hilo_bd(self.registrar_evento_bd, "Telemetría restablecida")
                 self.controlar_actuadores_con_datos(temp, ph, od600)
                 self.actualizar_grafica()
                 self.lbl_ultimo.configure(text=f"T={temp:.1f} °C   pH={ph:.2f}   OD600={od600:.3f}")
 
                 self._en_hilo_bd(self.guardar_en_bd, temp, ph, od600, callback=self._actualizar_led_bd)
+            elif self.ultimos_datos:
+                # Dato viejo (COM caído o Arduino colgado): NO se usa para
+                # controlar ni se guarda como si fuera en vivo. El SCADA lo
+                # verá OFFLINE, que es la verdad.
+                edad = time.time() - (self._ultima_telemetria_ts or time.time())
+                self.lbl_ultimo.configure(text=f"SIN DATOS NUEVOS hace {edad:.0f} s (último: "
+                                               f"T={self.ultimos_datos[0]:.1f} pH={self.ultimos_datos[1]:.2f})")
+                self.lbl_falla.set_estado(True)
+                if not self._sin_datos_avisado and not self._serial_perdido:
+                    self._sin_datos_avisado = True
+                    self._en_hilo_bd(self.registrar_evento_bd,
+                                     f"Sin telemetría del Arduino desde hace {edad:.0f} s (COM abierto)")
             else:
                 print("Aún no hay datos nuevos para graficar...")
 
@@ -1758,7 +1841,8 @@ class DashboardApp(ctk.CTk):
         usa para actualizar el LED de BD desde el hilo principal."""
         conn = self.get_db_conn()
         if not conn:
-            print("[BD] No se pudo conectar para guardar")
+            print("[BD] No se pudo conectar para guardar -> respaldo local")
+            self._respaldar_lectura(temp, ph, od600)
             return "sin_conexion"
 
         try:
@@ -1826,6 +1910,8 @@ class DashboardApp(ctk.CTk):
                 cursor.execute(query_old, valores[:10] + valores[11:])
             conn.commit()
             print(f"[BD] Guardado OK - filas afectadas: {cursor.rowcount}")
+            if self.respaldo.pendientes:
+                self.respaldo.reintentar_pendientes(self.get_db_conn)
             return "ok"
         except Exception as e:
             print(f"[ERROR BD Guardado] Tipo: {type(e).__name__}")
@@ -1835,7 +1921,28 @@ class DashboardApp(ctk.CTk):
             # Se invalida la conexión para forzar una reconexión limpia en el
             # próximo ciclo, en vez de seguir usando un socket ya roto.
             self.db_conn = None
+            self._respaldar_lectura(temp, ph, od600)
             return "error"
+
+    def _respaldar_lectura(self, temp, ph, od600):
+        """Guarda la lectura en el CSV local (se sube sola cuando la BD vuelva)."""
+        try:
+            with self.flujo_lock:
+                fp, fl = self.flujo_pulsos, self.flujo_litros_acum
+                fa = 1 if self.alertas_flujo else 0
+            fila = {
+                "fecha_hora": datetime.now(TZ_TIJUANA).strftime("%Y-%m-%d %H:%M:%S"),
+                "temperatura": temp, "ph": ph, "od600": od600,
+                "bomba_ph_on": int(self.bomba_ph), "bomba_iptg_on": int(self.bomba_iptg),
+                "bomba_cosecha_on": int(self.bomba_cosecha),
+                "sistema_funcionando": 0 if self.emergencia else 1,
+                "flujo_pulsos": fp, "flujo_litros_acum": fl, "flujo_alerta": fa,
+            }
+            for n in range(1, 8):
+                fila[f"rele{n}"] = int(self.rele_estados.get(n, 0))
+            self.respaldo.guardar_lectura(fila)
+        except Exception as e:
+            print(f"[Respaldo] No se pudo escribir el CSV local: {e}")
 
     def _actualizar_led_bd(self, status):
         """Callback de guardar_en_bd() (ver _en_hilo_bd): esta sí corre en
