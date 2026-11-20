@@ -33,3 +33,8 @@ Actualizado: 2026-11-12. Punto de retoma tras la revisión contra Marinescu & Po
 
 ## Sin revisar
 - Páginas 20–27 del paper (resultados, figuras, tablas y suplementos).
+
+## Prueba de 24 h
+- [ ] Seguir la guía `PRUEBA_24H.md` (comandos de energía, UPS, pausar Windows Update).
+- [ ] Probar antes: USB desconectado 30 s y WiFi apagado 2 min.
+- [ ] Decidir si se implementa autonomía en firmware V2 (hoy el watchdog apaga todo a los 10 s sin PC).
