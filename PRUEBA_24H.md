@@ -44,7 +44,7 @@ y pausar Windows Update para evitar reinicios automáticos.
 - Autonomía en firmware (termostato/agitador/aire que sigan si la PC falla): hoy V2 apaga todo a los 10 s. Opción futura con `#define` desactivado por defecto.
 
 ## Ejecutable de escritorio (Windows y macOS)
-Una sola vez: en GitHub crea el archivo `.github/workflows/build-escritorio.yml` con el contenido de `escritorio/build-escritorio.yml` (Add file → Create new file; el token del chat no tiene permiso `workflow`). Luego: pestaña **Actions** → "Compilar app de escritorio" → **Run workflow**. Al terminar (~5 min) descarga
+Pestaña **Actions** → "Compilar app de escritorio" → **Run workflow**. Al terminar (~5 min) descarga
 `Bioreactor-Windows` o `Bioreactor-macOS` (macOS = Apple Silicon). Descomprime y, **junto al ejecutable**
 (`Bioreactor.exe` / `Bioreactor.app`), crea tu `.env` a partir de `.env.example` (datos de la BD y `DB_SSL_CA=isrgrootx1.pem`).
 `parametros_proceso.json` y `respaldo_bioreactor/` también se crean en esa carpeta.
