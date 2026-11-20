@@ -12,6 +12,7 @@ import time
 import os
 from datetime import datetime
 from zoneinfo import ZoneInfo
+import sys
 import pymysql
 import bcrypt
 from respaldo_local import RespaldoLocal
@@ -19,7 +20,21 @@ from dotenv import load_dotenv
 
 TZ_TIJUANA = ZoneInfo("America/Tijuana")
 
-load_dotenv(override=True)
+def _carpeta_base():
+    """Carpeta donde viven .env, parametros_proceso.json, isrgrootx1.pem y
+    respaldo_bioreactor/. Con el ejecutable (PyInstaller) es la carpeta del
+    .exe (en macOS, la que contiene la .app); en desarrollo, la del script."""
+    if getattr(sys, "frozen", False):
+        exe = os.path.abspath(sys.executable)
+        marca = ".app" + os.sep + "Contents" + os.sep + "MacOS"
+        if marca in exe:
+            return os.path.dirname(exe.split(".app" + os.sep + "Contents")[0] + ".app")
+        return os.path.dirname(exe)
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+BASE_DIR = _carpeta_base()
+load_dotenv(os.path.join(BASE_DIR, ".env"), override=True)
 
 # Configuración base de datos (Clever Cloud) - se cargan desde variables de
 # entorno / archivo .env, NUNCA hardcodeadas en el código fuente.
@@ -69,7 +84,7 @@ COLOR_DIGITAL_TEXTO = "#39FF14"
 FUENTE_DIGITAL = "Consolas"
 
 
-PARAMS_ARCHIVO = os.path.join(os.path.dirname(os.path.abspath(__file__)), "parametros_proceso.json")
+PARAMS_ARCHIVO = os.path.join(BASE_DIR, "parametros_proceso.json")
 
 # (pestaña, grupo, etiqueta, unidad, ruta dentro de DashboardApp, mínimo, máximo, entero)
 ESQUEMA_PARAMETROS = [
@@ -310,7 +325,7 @@ def _ssl_kwargs():
     ca = os.getenv("DB_SSL_CA")
     if ca:
         if not os.path.isabs(ca):   # ruta relativa: se busca junto a este archivo (p. ej. isrgrootx1.pem)
-            ca = os.path.join(os.path.dirname(os.path.abspath(__file__)), ca)
+            ca = os.path.join(BASE_DIR, ca)
         return {"ssl_ca": ca}
     if os.getenv("DB_SSL", "").strip().lower() in ("1", "true", "yes", "si", "sí"):
         return {"ssl_verify_cert": True}
@@ -387,7 +402,7 @@ class LoginApp(ctk.CTk):
         self.tarjeta.place(relx=0.5, rely=0.5, anchor="center")
 
         try:
-            logo_pil = Image.open("logo.png")
+            logo_pil = Image.open(os.path.join(BASE_DIR, "logo.png"))
             logo_pil = logo_pil.resize((260, 150))
             self.logo = ctk.CTkImage(light_image=logo_pil, dark_image=logo_pil, size=(260, 150))
             ctk.CTkLabel(self.tarjeta, image=self.logo, text="").pack(pady=(28, 4))
@@ -1171,7 +1186,7 @@ class DashboardApp(ctk.CTk):
         self._avisos_pendientes = []     # (relé, texto) que el hilo serial deja para mostrar en la GUI
         self._ultima_telemetria_ts = None
         # --- Resistencia a fallas para pruebas de 24 h ---
-        self.respaldo = RespaldoLocal()          # cola CSV si la BD no responde
+        self.respaldo = RespaldoLocal(os.path.join(BASE_DIR, "respaldo_bioreactor"))          # cola CSV si la BD no responde
         self._puerto_reconexion = None           # último COM usado (para reconectar solo)
         self._reconexion_id = None
         self._serial_perdido = False             # True mientras el COM está caído

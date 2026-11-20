@@ -1,0 +1,52 @@
+name: Compilar app de escritorio (Windows y macOS)
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            nombre: Bioreactor-Windows
+          - os: macos-latest        # Apple Silicon (M1/M2/M3)
+            nombre: Bioreactor-macOS
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Instalar dependencias
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+      - name: Compilar
+        run: >
+          pyinstaller --noconfirm --clean --windowed --name Bioreactor
+          --collect-all customtkinter --collect-all tzdata --exclude-module pkg_resources
+          --hidden-import PIL._tkinter_finder
+          controlfisicoV2.py
+      - name: Armar carpeta de entrega (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          mkdir entrega
+          cp -r dist/Bioreactor/. entrega/
+          cp isrgrootx1.pem .env.example entrega/
+          cp PRUEBA_24H.md entrega/ || true
+      - name: Armar carpeta de entrega (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          mkdir entrega
+          ditto dist/Bioreactor.app entrega/Bioreactor.app
+          cp isrgrootx1.pem .env.example entrega/
+          cp PRUEBA_24H.md entrega/ || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.nombre }}
+          path: entrega
